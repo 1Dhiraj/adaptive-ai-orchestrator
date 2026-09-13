@@ -1,0 +1,100 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: orchestrator
+      POSTGRES_USER: orchestrator
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-development-only}
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orchestrator"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes: ["redis-data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    command: /bin/sh -c "alembic upgrade head && python -m orchestrator.cli serve --host 0.0.0.0 --port 8000"
+    env_file:
+      - path: .env.local
+        required: false
+    environment:
+      ORCHESTRATOR_STATE_URL: postgresql+psycopg://orchestrator:${POSTGRES_PASSWORD:-local-development-only}@postgres:5432/orchestrator
+      ORCHESTRATOR_BROKER_URL: redis://redis:6379/0
+      ORCHESTRATOR_RESULT_BACKEND: redis://redis:6379/1
+      ORCHESTRATOR_WORKSPACE: /app/workspace
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+    ports: ["8000:8000"]
+    volumes: ["orchestrator-workspace:/app/workspace"]
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  worker:
+    build: .
+    command: celery -A orchestrator.distributed:app worker --loglevel=INFO -Q workflows --concurrency=2
+    env_file:
+      - path: .env.local
+        required: false
+    environment:
+      ORCHESTRATOR_STATE_URL: postgresql+psycopg://orchestrator:${POSTGRES_PASSWORD:-local-development-only}@postgres:5432/orchestrator
+      ORCHESTRATOR_BROKER_URL: redis://redis:6379/0
+      ORCHESTRATOR_RESULT_BACKEND: redis://redis:6379/1
+      ORCHESTRATOR_WORKSPACE: /app/workspace
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+    volumes: ["orchestrator-workspace:/app/workspace"]
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  browser-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.playwright
+    env_file:
+      - path: .env.local
+        required: false
+    environment:
+      ORCHESTRATOR_STATE_URL: postgresql+psycopg://orchestrator:${POSTGRES_PASSWORD:-local-development-only}@postgres:5432/orchestrator
+      ORCHESTRATOR_BROKER_URL: redis://redis:6379/0
+      ORCHESTRATOR_RESULT_BACKEND: redis://redis:6379/1
+      ORCHESTRATOR_WORKSPACE: /app/workspace
+    volumes: ["orchestrator-workspace:/app/workspace"]
+    init: true
+    ipc: host
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes: ["./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    ports: ["9090:9090"]
+    depends_on: [api]
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.135.0
+    command: ["--config=/etc/otelcol/config.yml"]
+    volumes: ["./deploy/otel-collector.yml:/etc/otelcol/config.yml:ro"]
+    ports: ["4317:4317", "4318:4318", "8889:8889"]
+
+volumes:
+  postgres-data:
+  redis-data:
+  orchestrator-workspace:

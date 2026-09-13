@@ -1,0 +1,81 @@
+{
+  "_comment": [
+    "Copy to connections.json to let agents call any HTTP API by name.",
+    "",
+    "Secrets are NEVER stored here - only the NAMES of environment variables.",
+    "That makes this file safe to commit; put the actual values in .env.local.",
+    "",
+    "  python -m orchestrator.cli connections            list them and their status",
+    "  python -m orchestrator.cli run '...' --connections attach them to a run",
+    "",
+    "An agent then calls one with:",
+    "  TOOL_DIRECTIVE: {\"method\": \"GET\", \"path\": \"/customers\", \"query\": {\"limit\": 3}}",
+    "",
+    "GET/HEAD/OPTIONS run freely. POST/PUT/PATCH/DELETE are treated as",
+    "irreversible and pause for approval, showing the exact request first."
+  ],
+
+  "connections": {
+    "github": {
+      "base_url": "https://api.github.com",
+      "description": "GitHub REST API - repos, issues, pull requests",
+      "auth": { "type": "bearer", "token_env": "GITHUB_TOKEN" },
+      "headers": { "Accept": "application/vnd.github+json" }
+    },
+
+    "stripe": {
+      "base_url": "https://api.stripe.com/v1",
+      "description": "Stripe payments",
+      "auth": { "type": "bearer", "token_env": "STRIPE_API_KEY" }
+    },
+
+    "notion": {
+      "base_url": "https://api.notion.com/v1",
+      "description": "Notion pages and databases",
+      "auth": {
+        "type": "api_key",
+        "token_env": "NOTION_TOKEN",
+        "header": "Authorization",
+        "prefix": "Bearer "
+      },
+      "headers": { "Notion-Version": "2022-06-28" }
+    },
+
+    "openweather": {
+      "base_url": "https://api.openweathermap.org/data/2.5",
+      "description": "Weather data",
+      "auth": {
+        "type": "api_key",
+        "token_env": "OPENWEATHER_API_KEY",
+        "query_param": "appid"
+      }
+    },
+
+    "internal_crm": {
+      "base_url": "https://crm.internal.example.com/api/v2",
+      "description": "Our CRM, behind basic auth",
+      "auth": {
+        "type": "basic",
+        "username_env": "CRM_USER",
+        "password_env": "CRM_PASSWORD"
+      }
+    },
+
+    "salesforce": {
+      "base_url": "https://your-instance.my.salesforce.com/services/data/v59.0",
+      "description": "Salesforce, OAuth2 client credentials",
+      "auth": {
+        "type": "oauth2_client_credentials",
+        "token_url": "https://your-instance.my.salesforce.com/services/oauth2/token",
+        "client_id_env": "SF_CLIENT_ID",
+        "client_secret_env": "SF_CLIENT_SECRET"
+      }
+    },
+
+    "public_api": {
+      "base_url": "https://api.publicapis.org",
+      "description": "An API needing no authentication at all",
+      "auth": { "type": "none" }
+    }
+  }
+}

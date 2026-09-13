@@ -1,0 +1,104 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "adaptive-ai-orchestrator"
+version = "1.0.0"
+description = "Multi-agent AI task orchestrator with adaptive re-execution, tool fallback and built-in observability"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "google-genai>=1.0",
+    "requests>=2.31",
+    "boto3>=1.42,<2",
+]
+
+[project.optional-dependencies]
+server = [
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "websockets>=12.0",
+]
+production = [
+    "SQLAlchemy>=2.0,<3",
+    "alembic>=1.13",
+    "psycopg[binary]>=3.1",
+    "boto3>=1.42,<2",
+    "celery[redis]>=5.6,<6",
+    "PyJWT[crypto]>=2.8",
+    "cryptography>=42",
+    "prometheus-client>=0.20",
+    "opentelemetry-sdk>=1.25",
+    "opentelemetry-exporter-otlp>=1.25",
+    "opentelemetry-instrumentation-fastapi>=0.46b0",
+]
+local = [
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "websockets>=12.0",
+    "keyring>=25,<26",
+    "cryptography>=42",
+]
+mcp = [
+    "mcp>=1.9",
+]
+benchmarks = [
+    "langgraph>=0.2",
+    "langgraph-checkpoint-sqlite>=1.0",
+    "crewai>=1.0,<2",
+    "autogen-agentchat>=0.7,<1",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=4.1",
+]
+
+[project.scripts]
+orchestrator = "orchestrator.cli:main"
+
+[tool.setuptools]
+packages = ["orchestrator", "orchestrator.tools", "server", "benchmarks"]
+
+[tool.setuptools.package-data]
+server = ["static/*.html"]
+
+# ---------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "slow: spawns a real subprocess (e.g. an MCP server) - still fast, just not instant",
+    "postgres: requires the PostgreSQL integration service",
+]
+filterwarnings = [
+    # LangGraph/pydantic emit deprecation noise we do not control.
+    "ignore::DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["orchestrator", "server", "benchmarks"]
+omit = ["*/tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "@abstractmethod",
+]
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_ignores = true
+ignore_missing_imports = true
+
+[tool.black]
+line-length = 100
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

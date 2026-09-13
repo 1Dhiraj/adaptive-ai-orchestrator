@@ -1,0 +1,55 @@
+# Secrets
+.env
+.env.local
+.env*.backup
+# MCP server configs often carry tokens; the .example is committed instead.
+.mcp.json
+mcp_demo.json
+.orchestrator-recall.json
+.playwright-mcp/
+.codex/
+
+# Runtime state and generated output
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
+artifacts/
+dashboard.html
+results.json
+results.csv
+workspace/
+
+# Research source PDFs are retained locally but are not redistributed by the
+# software repository. Generated review/paper versions can be attached to a
+# project release separately.
+paper/references/*.pdf
+paper/input/*.pdf
+First Review - Multi-Agent Orchestrator system*.pptx
+Base Paper*.docx
+benchmarks/results/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+vendor/
+*.tgz
+tmp/
+.venv/
+venv/
+
+# Tooling
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

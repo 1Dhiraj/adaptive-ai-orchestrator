@@ -1,0 +1,36 @@
+name: production-verification
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: orchestrator_test
+          POSTGRES_USER: orchestrator
+          POSTGRES_PASSWORD: test-password
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U orchestrator"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      ORCHESTRATOR_TEST_POSTGRES_URL: postgresql+psycopg://orchestrator:test-password@localhost:5432/orchestrator_test
+      ORCHESTRATOR_STUB_LLM: "1"
+      CREWAI_TRACING_ENABLED: "false"
+      OTEL_SDK_DISABLED: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with: {python-version: "3.11", cache: pip}
+      - run: pip install -r requirements.txt
+      - run: ORCHESTRATOR_STATE_URL=$ORCHESTRATOR_TEST_POSTGRES_URL alembic upgrade head
+      - run: pytest -m "not slow"
+      - run: pytest -m slow
+      - run: python -m orchestrator.cli bench --repeats 1 --latency 0

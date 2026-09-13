@@ -1,0 +1,59 @@
+name: local-npm-release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  runtime:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win32
+            arch: x64
+            executable: orchestrator.exe
+          - os: macos-14
+            platform: darwin
+            arch: arm64
+            executable: orchestrator
+          - os: ubuntu-latest
+            platform: linux
+            arch: x64
+            executable: orchestrator
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with: {python-version: "3.11", cache: pip}
+      - run: python -m pip install -e ".[local]" pyinstaller
+      - run: pyinstaller --clean --noconfirm orchestrator.spec
+      - shell: bash
+        run: |
+          mkdir -p "stage/${{ matrix.platform }}-${{ matrix.arch }}"
+          cp "dist/${{ matrix.executable }}" "stage/${{ matrix.platform }}-${{ matrix.arch }}/${{ matrix.executable }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-${{ matrix.platform }}-${{ matrix.arch }}
+          path: stage/
+
+  package:
+    needs: runtime
+    runs-on: ubuntu-latest
+    permissions: {contents: write, id-token: write}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: {pattern: runtime-*, path: vendor, merge-multiple: true}
+      - uses: actions/setup-node@v4
+        with: {node-version: "22", registry-url: "https://registry.npmjs.org"}
+      - run: npm test
+        env: {ORCHESTRATOR_NO_OPEN: "1"}
+      - run: npm pack
+      - uses: actions/upload-artifact@v4
+        with: {name: npm-package, path: "*.tgz"}
+      - if: startsWith(github.ref, 'refs/tags/v')
+        run: npm publish --provenance --access public
+        env: {NODE_AUTH_TOKEN: "${{ secrets.NPM_TOKEN }}"}

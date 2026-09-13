@@ -1,0 +1,34 @@
+# Complete installation, including production services and benchmark adapters.
+google-genai>=1.0
+requests>=2.31
+boto3>=1.42,<2
+SQLAlchemy>=2.0,<3
+alembic>=1.13
+psycopg[binary]>=3.1
+celery[redis]>=5.6,<6
+PyJWT[crypto]>=2.8
+cryptography>=42
+keyring>=25,<26
+prometheus-client>=0.20
+opentelemetry-sdk>=1.25
+opentelemetry-exporter-otlp>=1.25
+opentelemetry-instrumentation-fastapi>=0.46b0
+
+# Web dashboard (python -m orchestrator.cli serve)
+fastapi>=0.110
+uvicorn>=0.27
+websockets>=12.0
+
+# Real MCP servers as agent tools (python -m orchestrator.cli mcp)
+# Optional: imported lazily, everything else works without it.
+mcp>=1.9
+
+# Benchmark baselines (python -m orchestrator.cli bench)
+langgraph>=0.2
+langgraph-checkpoint-sqlite>=1.0
+crewai>=1.0,<2
+autogen-agentchat>=0.7,<1
+
+# Tests
+pytest>=8.0
+pytest-cov>=4.1

@@ -1,0 +1,33 @@
+{
+  "name": "adaptive-ai-orchestrator",
+  "version": "1.0.0",
+  "description": "Local-first multi-agent workflow orchestrator",
+  "license": "MIT",
+  "author": "Dhiraj and Nithersan",
+  "publishConfig": {"access": "public", "provenance": true},
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/1Dhiraj/adaptive-ai-orchestrator.git"
+  },
+  "homepage": "https://github.com/1Dhiraj/adaptive-ai-orchestrator#readme",
+  "bugs": {"url": "https://github.com/1Dhiraj/adaptive-ai-orchestrator/issues"},
+  "bin": {
+    "adaptive-ai-orchestrator": "npm/bin/orchestrator.js",
+    "ai-orchestrator": "npm/bin/orchestrator.js"
+  },
+  "files": [
+    "npm/",
+    "vendor/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "start": "node npm/bin/orchestrator.js",
+    "test": "npm run test:launcher",
+    "test:launcher": "node --test npm/test/*.test.js",
+    "pack:check": "npm pack --dry-run"
+  },
+  "engines": {"node": ">=18"},
+  "os": ["win32", "darwin", "linux"],
+  "keywords": ["ai", "agents", "workflow", "orchestrator", "mcp", "local-first"]
+}

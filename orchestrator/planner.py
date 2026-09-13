@@ -1,0 +1,679 @@
+"""Layer 1 -- plain English in, an executable dependency graph out.
+
+The LLM is asked for JSON, but it is never trusted: whatever comes back is
+parsed defensively and then *repaired* (duplicate ids renamed, dangling
+dependencies pruned, cycles broken) so the orchestrator always receives a
+valid DAG.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
+
+from .agents import resolve_role
+from .graph import DependencyGraph
+from .inputs import InputRequest, parse_declared_inputs
+from .llm import LLMProvider, get_provider
+from .models import LLMUsage, Step
+from .requirements import (
+    AgentSpec,
+    Requirement,
+    RequirementsReport,
+    infer_requirements,
+    merge_requirements,
+)
+from .tools import canonical_tool_name
+
+PLANNER_SYSTEM_PROMPT = """You are a project planning agent. Given any task,
+you decide (a) what specialists are needed, (b) what capabilities the work
+depends on, and (c) how to decompose it into a directed acyclic graph.
+
+Respond with ONLY valid JSON, no markdown fences and no commentary:
+
+{
+  "agents": [
+    {
+      "role": "snake_case_specialist_name",
+      "system_prompt": "You are a ... . You deliver ... .",
+      "why": "one line on why this task needs this specialist",
+      "handles": ["task_id", ...]
+    }
+  ],
+  "requirements": [
+    {
+      "name": "github | DATABASE_URL | filesystem | psycopg | gh",
+      "kind": "tool | credential | mcp_server | package | binary",
+      "why": "what it is needed for",
+      "needed_by": ["task_id", ...],
+      "setup": "the exact command or variable that satisfies this",
+      "optional": false
+    }
+  ],
+  "tasks": [
+    {
+      "id": "short_snake_case_id",
+      "name": "Human readable name",
+      "role": "must match one of the agents above",
+      "description": "One or two sentences stating exactly what to produce.",
+      "depends_on": ["id_of_prerequisite", ...],
+      "tool": "EXACT name from the tool list supplied below, or null",
+      "condition": {"source":"earlier_task_id or trigger.field", "operator":"contains | not_contains | equals | not_equals | exists | truthy", "value":"comparison value"},
+      "inputs": [
+        {
+          "name": "snake_case_name",
+          "prompt": "the question to put to the operator",
+          "type": "text | multiline | email | url | number | boolean | choice | secret",
+          "required": true,
+          "default": null,
+          "options": ["only for type choice"],
+          "why": "what the step does with it"
+        }
+      ]
+    }
+  ],
+  "notes": ["assumptions or caveats worth surfacing to the operator"]
+}
+
+AGENTS - invent the specialists this specific task needs. Do not limit
+yourself to generic software roles: a legal review task wants a
+"contract_analyst", a biology task wants a "molecular_biologist". Write each
+system_prompt so it states the expertise AND the concrete deliverable format.
+Reuse one agent across several tasks when the expertise is the same.
+
+REQUIREMENTS - declare everything the work genuinely depends on:
+  - "tool": one of the tools in the supplied catalogue, including workspace
+    for creating project files, terminal for restricted build/test commands,
+    hermes_desktop for desktop applications, or a connected MCP/API tool.
+  - "credential": the exact environment variable name, e.g. GITHUB_TOKEN.
+  - "mcp_server": an MCP server that supplies a needed capability. Use the
+    real package name in "setup", e.g.
+    "npx -y @modelcontextprotocol/server-filesystem ."
+  - "binary": an executable that must be on PATH, e.g. "gh", "psql".
+  - "package": an importable Python package.
+Mark a requirement optional:true when the work can still be completed without
+it, just less completely. Declare nothing the task does not actually need --
+a pure writing or analysis task may need no capabilities at all.
+
+INPUTS - facts only the operator can supply, that you cannot produce yourself.
+
+Declare an input ONLY for a fact you could not possibly know:
+  - a recipient address, an account name, which repository to push to
+  - a deadline, a budget, a headcount, a real-world constraint
+  - a choice between genuinely different approaches
+
+NEVER declare an input for anything the agent is supposed to WRITE. The whole
+point of the step is to produce that. These are all wrong:
+  - "What is the body of the email?"        <- you write the body
+  - "What is the subject line?"             <- you write the subject
+  - "What should the report say?"           <- you write the report
+  - "Which template should we use?"         <- you choose it
+  - "What content should the page have?"    <- you create it
+If a step's job is to draft something, asking the operator to draft it makes
+the step pointless.
+
+Also never declare an input for something an earlier step's output provides.
+Use type "secret" for credentials. At most 2 inputs per step, and most steps
+should have none at all.
+
+TASKS:
+- Between 3 and 8 tasks. Fewer, larger tasks beat many trivial ones.
+- Every id in depends_on MUST be the id of another task in this list.
+- The graph must be acyclic.
+- Put tasks that could run at the same time at the same dependency depth --
+  do NOT chain everything into a single line unless it truly is sequential.
+- "tool" must name something declared in requirements.
+- Descriptions state the deliverable, not the process.
+- Use condition only for a real branch. Its source must be a dependency's id
+  or trigger.field for webhook data. Omit condition for normal tasks.
+- For software projects, steps that create or edit code should use workspace;
+  build/test commands should be separate terminal steps. Use github only when
+  the request actually asks to publish or modify a remote repository.
+"""
+
+
+SOFTWARE_TASK_PATTERN = re.compile(
+    r"\b(?:web|mobile|desktop)\s+app(?:lication)?\b|\bwebsite\b|\bsoftware\b|"
+    r"\b(?:frontend|backend|full[ -]?stack|api|microservice|codebase)\b|"
+    r"\b(?:build|develop|implement|create)\b.{0,35}\b(?:app|system|platform|portal|dashboard)\b",
+    re.IGNORECASE,
+)
+
+
+def is_software_task(description: str) -> bool:
+    """Conservative check used to attach opt-in coding tools before planning."""
+    return bool(SOFTWARE_TASK_PATTERN.search(description or ""))
+
+
+CLARIFIER_SYSTEM_PROMPT = """You are about to plan a task. First decide whether
+you need to ask the person anything.
+
+Respond with ONLY valid JSON, no markdown fences:
+
+{
+  "questions": [
+    {
+      "name": "snake_case_name",
+      "prompt": "the question, phrased for a non-expert",
+      "type": "text | multiline | email | url | number | boolean | choice",
+      "options": ["only for type choice"],
+      "default": "a sensible default, or null if there isn't one",
+      "required": true,
+      "why": "one line: what changes in the plan depending on the answer"
+    }
+  ]
+}
+
+Ask ONLY what you genuinely cannot assume and what would materially change
+the plan -- scope, audience, platform, budget, deadline, which account or
+repository to use, a choice between real alternatives.
+
+Do NOT ask:
+- anything you can sensibly decide yourself as the expert
+- anything a later step will discover on its own
+- for API keys, passwords or credentials (those are handled separately)
+- vague questions like "any other requirements?"
+
+Prefer 0-4 questions. Returning an empty list is a good answer when the task
+is already clear -- an unnecessary question is worse than none. Offer
+"choice" with concrete options rather than open text wherever you can, and
+give a sensible "default" so the person can just accept it.
+"""
+
+
+class PlanningError(RuntimeError):
+    """The planner could not produce a usable graph."""
+
+
+@dataclass
+class PlanResult:
+    graph: DependencyGraph
+    usage: LLMUsage = field(default_factory=LLMUsage)
+    repairs: List[str] = field(default_factory=list)
+    raw_response: str = ""
+    used_fallback_plan: bool = False
+    #: Specialists the planner decided this task needs, and the capabilities
+    #: it depends on -- already checked against the real environment.
+    requirements: RequirementsReport = field(default_factory=RequirementsReport)
+
+    @property
+    def agents(self) -> List[AgentSpec]:
+        return self.requirements.agents
+
+    @property
+    def can_run(self) -> bool:
+        return self.requirements.can_run
+
+    def print_requirements(self, width: int = 78) -> None:
+        self.requirements.print_report(width)
+
+
+def extract_json(text: str) -> Optional[dict]:
+    """Best-effort JSON extraction from an LLM response.
+
+    Handles: clean JSON, ```json fenced blocks, and prose with an object
+    embedded somewhere in it.
+    """
+    if not text:
+        return None
+    candidate = text.strip()
+
+    fenced = re.search(r"```(?:json)?\s*(.*?)```", candidate, re.DOTALL)
+    if fenced:
+        candidate = fenced.group(1).strip()
+
+    try:
+        parsed = json.loads(candidate)
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        pass
+
+    # Fall back to brace matching so trailing prose does not defeat us.
+    start = candidate.find("{")
+    while start != -1:
+        depth, in_string, escaped = 0, False, False
+        for i in range(start, len(candidate)):
+            ch = candidate[i]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        parsed = json.loads(candidate[start:i + 1])
+                        if isinstance(parsed, dict):
+                            return parsed
+                    except json.JSONDecodeError:
+                        break
+        start = candidate.find("{", start + 1)
+    return None
+
+
+#: Words that mark an "input" as actually asking the operator to do the
+#: agent's job -- write the body, pick the wording, supply the content.
+_DELIVERABLE_WORDS = re.compile(
+    r"\b(body|content|copy|text|wording|message|subject|title|headline|"
+    r"template|draft|summary|description|outline|script|caption|"
+    r"code|snippet|design|layout|schema|query|answer|response)\b",
+    re.IGNORECASE)
+
+#: Phrasings that reliably indicate the model is asking for generated output
+#: rather than a fact. "What is the name of X" is fine; "what should X say"
+#: is the agent's job.
+_DELIVERABLE_PHRASES = re.compile(
+    r"(what should .* (say|contain|include|look like)|"
+    r"write the|provide the (text|content|body|copy)|"
+    r"what (is|are) the (body|content|text|subject|wording))",
+    re.IGNORECASE)
+
+#: Too many questions is its own failure: the operator ends up doing the work.
+MAX_INPUTS_PER_STEP = 2
+MAX_INPUTS_PER_WORKFLOW = 5
+
+
+def _is_deliverable_request(request: Any) -> bool:
+    """True if this 'input' is really asking the operator to do the agent's job."""
+    haystack = f"{request.name} {request.prompt}"
+    if _DELIVERABLE_PHRASES.search(haystack):
+        return True
+    # A name like "email_body" or "report_content" is the clearest signal.
+    return bool(_DELIVERABLE_WORDS.search(request.name.replace("_", " ")))
+
+
+def filter_inputs(requests: List[InputRequest],
+                  limit: int = MAX_INPUTS_PER_STEP) -> List[InputRequest]:
+    """Drop questions the agent should be answering itself, then cap the rest.
+
+    Models reliably over-declare inputs -- left alone they will ask the
+    operator to supply the email body, which makes the step pointless and the
+    workflow feel like an interrogation. Prompt wording alone does not stop
+    it, so this is enforced in code.
+    """
+    kept = [r for r in requests if not _is_deliverable_request(r)]
+    return kept[:limit]
+
+
+def _sanitise_id(raw: Any, index: int) -> str:
+    text = re.sub(r"[^a-z0-9_]+", "_", str(raw or "").strip().lower()).strip("_")
+    return text or f"step_{index + 1}"
+
+
+class TaskPlanner:
+    """Turns a project description into a validated :class:`DependencyGraph`."""
+
+    def __init__(self, llm: Optional[LLMProvider] = None,
+                 system_prompt: str = PLANNER_SYSTEM_PROMPT):
+        self.llm = llm or get_provider()
+        self.system_prompt = system_prompt
+
+    # -- public API --------------------------------------------------------
+
+    def clarify(self, project_description: str,
+                max_questions: int = 4) -> List[InputRequest]:
+        """Ask what the planner needs to know before it can plan properly.
+
+        Returns typed questions to put to the operator. An empty list means
+        the task is clear enough to plan as-is -- which is a good outcome, not
+        a failure: interrogating someone about an unambiguous request is worse
+        than getting on with it.
+
+        A model that returns nonsense here simply yields no questions; a bad
+        clarification round must never block planning.
+        """
+        try:
+            response = self.llm.generate(
+                prompt=f"Task:\n{project_description}",
+                system=CLARIFIER_SYSTEM_PROMPT, json_mode=True)
+        except Exception:  # noqa: BLE001 - clarifying is optional, never fatal
+            return []
+
+        parsed = extract_json(response.text) or {}
+        raw = parsed.get("questions")
+        if not isinstance(raw, list):
+            return []
+
+        questions = parse_declared_inputs(raw)
+        # Credentials are handled by the setup wizard, which knows where to
+        # get each one; a model asking for an API key here would be a worse,
+        # unguided version of that flow.
+        questions = [q for q in questions
+                     if not re.search(r"(api[_\s-]?key|token|password|secret)",
+                                      f"{q.name} {q.prompt}", re.IGNORECASE)]
+        return questions[:max_questions]
+
+    def plan(self, project_description: str, extra_guidance: str = "",
+             tools: Optional[Any] = None,
+             clarifications: Optional[Dict[str, Any]] = None) -> PlanResult:
+        """Plan a task: specialists, prerequisites and an executable DAG.
+
+        ``tools`` is the registry to check requirements against; pass the one
+        the workflow will actually use so the readiness report reflects
+        reality (including any attached MCP servers).
+        """
+        # A caller may use TaskPlanner directly instead of going through
+        # Workflow.from_description(). Software plans still need to see the
+        # safe file and terminal capabilities or valid tool choices from the
+        # model are later discarded as unavailable. The workflow path has
+        # already registered run-scoped instances, so only fill the gap here.
+        if tools is not None and is_software_task(project_description):
+            if "workspace" not in tools or "terminal" not in tools:
+                from .tools.workspace import coding_team_tools
+
+                for coding_tool in coding_team_tools("planning"):
+                    if coding_tool.name not in tools:
+                        tools.register(coding_tool)
+
+        prompt = f"Task:\n{project_description}"
+        if clarifications:
+            # The operator's answers are facts, not suggestions -- say so, or
+            # the model treats them as background and plans around them.
+            answers = "\n".join(f"- {k}: {v}" for k, v in clarifications.items() if v not in (None, ""))
+            if answers:
+                prompt += ("\n\nThe person has already answered these; treat them as "
+                           f"fixed requirements:\n{answers}")
+        if extra_guidance:
+            prompt += f"\n\nAdditional constraints:\n{extra_guidance}"
+
+        # Name the real tools. Without this the model invents plausible ones
+        # ("email_service", "mailer") and every step using them fails at run
+        # time with nothing to call.
+        if tools is not None:
+            catalogue = "\n".join(
+                f"- {t['name']}: {t['description']}" for t in tools.describe())
+            if catalogue:
+                prompt += ("\n\nThe ONLY tools that exist are these. Use a name from "
+                           f"this list verbatim, or null. Never invent a tool name:\n{catalogue}")
+
+        response = self.llm.generate(prompt, system=self.system_prompt, json_mode=True)
+        parsed = extract_json(response.text)
+
+        used_fallback = False
+        if not parsed or not isinstance(parsed.get("tasks"), list) or not parsed["tasks"]:
+            parsed = self._fallback_plan(project_description)
+            used_fallback = True
+
+        repairs: List[str] = []
+        # Agents are parsed first so the graph can resolve step roles against
+        # them -- otherwise a declared 'medical_writer' fuzzy-matches into the
+        # built-in 'writer' and the specialist is silently lost.
+        agents = self._parse_agents(parsed, repairs)
+        declared_roles = {a.role for a in agents}
+
+        available = {t["name"] for t in tools.describe()} if tools is not None else None
+        graph, graph_repairs = self.build_graph(parsed["tasks"], declared_roles, available)
+        repairs.extend(graph_repairs)
+        if used_fallback:
+            repairs.insert(0, "planner response was unusable; applied a generic fallback plan")
+
+        # Now that the graph exists, record which steps each specialist covers.
+        for agent in agents:
+            if not agent.handles:
+                agent.handles = [sid for sid in graph.topological_order()
+                                 if graph.get(sid).agent_role == agent.role]
+
+        declared = self._parse_requirements(parsed, repairs)
+
+        # Whatever the planner declared, every tool the steps actually name is
+        # added too -- the report must never under-state what is needed.
+        report = RequirementsReport(
+            requirements=merge_requirements(declared, infer_requirements(graph)),
+            agents=agents,
+            notes=[str(n) for n in (parsed.get("notes") or []) if str(n).strip()],
+        )
+        if tools is None:
+            from .tools import default_tool_manager
+
+            tools = default_tool_manager()
+        report.check(tools)
+
+        return PlanResult(
+            graph=graph,
+            usage=response.usage,
+            repairs=repairs,
+            raw_response=response.text,
+            used_fallback_plan=used_fallback,
+            requirements=report,
+        )
+
+    # -- parsing helpers ---------------------------------------------------
+
+    @staticmethod
+    def _parse_agents(parsed: Dict[str, Any], repairs: List[str]) -> List[AgentSpec]:
+        """Read the planner's invented specialists, keeping only usable ones."""
+        from .agents import _slug_role
+
+        specs: List[AgentSpec] = []
+        seen: set = set()
+        for raw in parsed.get("agents") or []:
+            if not isinstance(raw, dict):
+                continue
+            spec = AgentSpec.from_dict(raw)
+            if not spec.role or not spec.system_prompt:
+                repairs.append(f"dropped agent '{spec.role or '(unnamed)'}' (missing prompt)")
+                continue
+            spec.role = _slug_role(spec.role) or "generic"
+            if spec.role in seen:
+                repairs.append(f"dropped duplicate agent '{spec.role}'")
+                continue
+            seen.add(spec.role)
+            specs.append(spec)
+        return specs
+
+    @staticmethod
+    def _parse_requirements(parsed: Dict[str, Any], repairs: List[str]) -> List[Requirement]:
+        requirements: List[Requirement] = []
+        for raw in parsed.get("requirements") or []:
+            if not isinstance(raw, dict) or not str(raw.get("name", "")).strip():
+                repairs.append("dropped a malformed requirement entry")
+                continue
+            requirements.append(Requirement.from_dict(raw))
+        return requirements
+
+    @staticmethod
+    def resolve_tool(name: Optional[str], available: Optional[set]) -> tuple:
+        """Map a planner-chosen tool onto one that actually exists.
+
+        Models invent plausible-sounding tool names (``email_service``,
+        ``mailer``, ``db``). Left alone, the step fails at runtime with
+        nothing to call and the requirements report demands a credential for
+        a tool that does not exist. So: canonicalise, then match by substring
+        against the real registry, then give up and drop the reference rather
+        than plan a step that cannot possibly run.
+
+        Returns ``(resolved_name_or_None, repair_note_or_None)``.
+        """
+        canonical = canonical_tool_name(name)
+        if not canonical:
+            return None, None
+        if available is None or canonical in available:
+            return canonical, None
+
+        # "email_service" -> "email", "mail_sender" -> "gmail", "db" -> handled
+        # by aliases above. Prefer the longest overlap so "postgres_cli" does
+        # not win over "postgres" for a request of "postgres".
+        words = {w for w in re.split(r"[^a-z0-9]+", canonical.lower()) if len(w) > 2}
+        candidates = [
+            real for real in available
+            if real in canonical or canonical in real
+            or words & {w for w in re.split(r"[^a-z0-9]+", real.lower()) if len(w) > 2}
+        ]
+        if candidates:
+            best = sorted(candidates, key=lambda r: (-len(set(r) & set(canonical)), len(r)))[0]
+            return best, f"tool '{canonical}' does not exist; using '{best}' instead"
+
+        return None, (f"tool '{canonical}' does not exist and nothing similar is "
+                      "registered; the step will run without a tool")
+
+    @staticmethod
+    def build_graph(tasks: List[Dict[str, Any]],
+                    declared_roles: Optional[set] = None,
+                    available_tools: Optional[set] = None) -> tuple:
+        """Convert raw task dicts into a valid DAG, recording every repair.
+
+        ``declared_roles`` are specialists the planner defined explicitly; a
+        step naming one keeps it verbatim instead of being fuzzy-matched onto
+        a built-in role.
+        """
+        repairs: List[str] = []
+        steps: List[Step] = []
+        seen_ids: Dict[str, int] = {}
+
+        for index, task in enumerate(tasks):
+            if not isinstance(task, dict):
+                repairs.append(f"dropped non-object task at index {index}")
+                continue
+
+            step_id = _sanitise_id(task.get("id"), index)
+            if step_id in seen_ids:
+                seen_ids[step_id] += 1
+                new_id = f"{step_id}_{seen_ids[step_id]}"
+                repairs.append(f"duplicate id '{step_id}' renamed to '{new_id}'")
+                step_id = new_id
+            seen_ids.setdefault(step_id, 0)
+
+            # resolve_role, not normalise_role: a specialist the planner
+            # invented must survive here, or it is silently flattened away.
+            role = resolve_role(str(task.get("role") or "generic"), declared_roles)
+            description = str(task.get("description") or task.get("name") or step_id).strip()
+
+            raw_deps = task.get("depends_on") or []
+            if isinstance(raw_deps, str):
+                raw_deps = [raw_deps]
+            deps = [_sanitise_id(d, 0) for d in raw_deps if str(d).strip()]
+
+            tool = task.get("tool")
+            if isinstance(tool, str) and tool.strip().lower() in {"none", "null", ""}:
+                tool = None
+            tool, tool_repair = TaskPlanner.resolve_tool(tool, available_tools)
+            if tool_repair:
+                repairs.append(f"step '{step_id}': {tool_repair}")
+
+            condition = task.get("condition")
+            if isinstance(condition, dict):
+                valid_ops = {"contains", "not_contains", "equals", "not_equals",
+                             "exists", "truthy"}
+                source = str(condition.get("source", "")).strip()
+                operator = str(condition.get("operator", "truthy")).strip().lower()
+                if not source or operator not in valid_ops:
+                    repairs.append(f"step '{step_id}': dropped invalid condition")
+                    condition = None
+                else:
+                    condition = {"source": source, "operator": operator,
+                                 "value": condition.get("value")}
+            else:
+                condition = None
+
+            steps.append(Step(
+                id=step_id,
+                name=str(task.get("name") or "").strip(),
+                description=description,
+                agent_role=role,
+                depends_on=deps,
+                requires_tool=tool,
+                inputs=filter_inputs(parse_declared_inputs(task.get("inputs"))),
+                condition=condition,
+            ))
+
+        if not steps:
+            raise PlanningError("planner produced no usable tasks")
+
+        # Cap questions across the whole workflow, keeping the earliest steps'
+        # (they block the most). Being asked eight things up front reads as an
+        # interrogation and is usually a sign the model over-declared.
+        budget = MAX_INPUTS_PER_WORKFLOW
+        for step in steps:
+            if budget <= 0:
+                if step.inputs:
+                    repairs.append(
+                        f"dropped {len(step.inputs)} question(s) on '{step.id}' "
+                        f"(workflow limit of {MAX_INPUTS_PER_WORKFLOW} reached)")
+                step.inputs = []
+                continue
+            if len(step.inputs) > budget:
+                repairs.append(f"trimmed questions on '{step.id}' to fit the workflow limit")
+                step.inputs = step.inputs[:budget]
+            budget -= len(step.inputs)
+
+        graph = DependencyGraph(steps)
+
+        for step_id, dep in graph.prune_dangling_dependencies():
+            repairs.append(f"dropped dependency '{step_id}' -> '{dep}' (no such step)")
+        for step_id, dep in graph.break_cycles():
+            repairs.append(f"broke cycle by removing dependency '{step_id}' -> '{dep}'")
+
+        graph.validate()
+        return graph, repairs
+
+    def revise_step(self, step: Step, new_requirement: str) -> str:
+        """Rewrite a step's description to fold in a changed requirement.
+
+        Used by ``Workflow.handle_step_change`` when the caller supplies a new
+        requirement rather than just invalidating the step.
+        """
+        response = self.llm.generate(
+            prompt=(
+                f"Current task description:\n{step.description}\n\n"
+                f"New requirement from the client:\n{new_requirement}\n\n"
+                "Rewrite the task description so it satisfies the new requirement. "
+                "Reply with the rewritten description only, one or two sentences."
+            ),
+            system="You rewrite task descriptions precisely and concisely.",
+        )
+        revised = response.text.strip()
+        return revised or f"{step.description} (updated: {new_requirement})"
+
+    # -- fallback ----------------------------------------------------------
+
+    @staticmethod
+    def _fallback_plan(description: str) -> Dict[str, Any]:
+        """A generic software-delivery DAG, used when the LLM output is unusable."""
+        topic = (description or "the project").strip().rstrip(".")
+        return {"notes": [
+            "The planner's response could not be parsed, so a generic "
+            "software-delivery plan was substituted. Review it before running."
+        ], "tasks": [
+            {"id": "requirements", "role": "research", "name": "Clarify Requirements",
+             "description": f"Clarify scope, constraints and success criteria for: {topic}.",
+             "depends_on": [], "tool": None},
+            {"id": "database", "role": "database", "name": "Design Schema",
+             "description": f"Design the data model and migrations for: {topic}.",
+             "depends_on": ["requirements"], "tool": "postgres"},
+            {"id": "backend", "role": "backend", "name": "Build API",
+             "description": f"Implement the API and business logic for: {topic}.",
+             "depends_on": ["database"], "tool": "github"},
+            {"id": "frontend", "role": "frontend", "name": "Build UI",
+             "description": f"Build the user interface for: {topic}.",
+             "depends_on": ["requirements"], "tool": None},
+            {"id": "testing", "role": "testing", "name": "Integration Tests",
+             "description": f"Write and run integration tests covering: {topic}.",
+             "depends_on": ["backend", "frontend"], "tool": "ci"},
+        ]}
+
+
+def plan_from_json(path: str) -> DependencyGraph:
+    """Load a hand-written plan from a JSON file.
+
+    Accepts either ``{"tasks": [...]}`` or a bare list of task objects.
+    """
+    with open(path, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+    if isinstance(data, list):
+        tasks = data
+    elif isinstance(data, dict):
+        tasks = data.get("tasks", [])
+    else:
+        raise PlanningError(f"{path}: expected an object or a list of tasks")
+    graph, _ = TaskPlanner.build_graph(tasks)
+    return graph

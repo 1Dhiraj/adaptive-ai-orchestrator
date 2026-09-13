@@ -1,0 +1,14 @@
+{
+  "connections": {
+    "open_meteo": {
+      "base_url": "https://api.open-meteo.com/v1",
+      "description": "Free weather forecast API. No API key required. Use path /forecast with query params latitude, longitude, current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code",
+      "auth": { "type": "none" }
+    },
+    "geocoding": {
+      "base_url": "https://geocoding-api.open-meteo.com/v1",
+      "description": "Look up latitude/longitude for a city name. Use path /search with query param name",
+      "auth": { "type": "none" }
+    }
+  }
+}

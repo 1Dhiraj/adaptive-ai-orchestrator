@@ -1,0 +1,14 @@
+.git
+.env*
+__pycache__
+.pytest_cache
+.coverage
+artifacts
+benchmarks/results
+paper
+tmp
+workspace
+*.pptx
+*.pdf
+*.docx
+orchestrator_state.db*

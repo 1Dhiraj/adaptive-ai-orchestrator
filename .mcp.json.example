@@ -1,0 +1,40 @@
+{
+  "_comment": [
+    "Copy to .mcp.json to give agents real MCP tools.",
+    "Same shape Claude Desktop and Claude Code use, so an existing config works as-is.",
+    "List what a server exposes with:  python -m orchestrator.cli mcp",
+    "Then use a tool in a step:        Step(..., requires_tool='read_file')",
+    "",
+    "Optional per-server keys this orchestrator adds:",
+    "  capability   join an existing fallback chain, e.g. 'vcs' to back up github",
+    "  fallbacks    extra tool names to try if this one fails",
+    "  tool_prefix  namespace the tool names, to avoid collisions between servers"
+  ],
+
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+      "tool_prefix": "fs_"
+    },
+
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_your_token_here" },
+      "capability": "vcs",
+      "tool_prefix": "gh_"
+    },
+
+    "local_example": {
+      "command": "python",
+      "args": ["tests/fixtures/fake_mcp_server.py"]
+    },
+
+    "remote_example": {
+      "url": "https://example.com/mcp",
+      "transport": "streamable_http",
+      "headers": { "Authorization": "Bearer your_token_here" }
+    }
+  }
+}

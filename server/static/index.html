@@ -1,0 +1,1541 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Adaptive AI Task Orchestrator</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg:#0f1115; --panel:#161a23; --panel-2:#12151d; --line:#242a36;
+    --text:#e8ecf4; --muted:#8b93a7; --accent:#6ea8fe;
+    --done:#2ecc71; --reused:#3498db; --failed:#e74c3c; --paused:#f39c12;
+    --running:#9b59b6; --pending:#5d6470; --cancelled:#7f8c8d;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-size:14px;
+         font-family:system-ui,-apple-system,"Segoe UI",sans-serif; line-height:1.5; }
+  header { display:flex; align-items:center; gap:1rem; padding:.9rem 1.25rem;
+           border-bottom:1px solid var(--line); background:var(--panel-2);
+           position:sticky; top:0; z-index:10; flex-wrap:wrap; }
+  header h1 { font-size:1rem; margin:0; font-weight:650; letter-spacing:.01em; }
+  .pill { font-size:.72rem; padding:.15rem .55rem; border-radius:999px;
+          background:#2b3242; color:#c3cad8; font-weight:600; }
+  .pill.on { background:var(--done); color:#0f1115; }
+  .pill.off { background:var(--failed); color:#fff; }
+  main { display:grid; grid-template-columns:minmax(0,1fr) 380px; gap:1rem;
+         padding:1rem 1.25rem; align-items:start; }
+  @media (max-width:1000px){ main { grid-template-columns:1fr; } }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+           padding:1rem; margin-bottom:1rem; }
+  .panel h2 { font-size:.72rem; text-transform:uppercase; letter-spacing:.08em;
+              color:var(--muted); margin:0 0 .75rem; font-weight:650; }
+  input, select, textarea, button {
+    font:inherit; color:var(--text); background:var(--panel-2);
+    border:1px solid var(--line); border-radius:7px; padding:.45rem .6rem; }
+  input, textarea { width:100%; }
+  textarea { resize:vertical; min-height:64px; }
+  button { cursor:pointer; background:#232a38; border-color:#2f3747; font-weight:600; }
+  button:hover:not(:disabled) { background:#2c3444; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  button.primary { background:var(--accent); color:#0b1020; border-color:var(--accent); }
+  button.danger  { background:#3a2226; border-color:#5a2f36; color:#ffb4bc; }
+  .row { display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; }
+  .row > * { flex:0 0 auto; }
+  .grow { flex:1 1 160px; }
+  .tiles { display:grid; gap:.6rem; grid-template-columns:repeat(auto-fit,minmax(96px,1fr)); }
+  .tile { background:var(--panel-2); border:1px solid var(--line); border-radius:8px; padding:.6rem .7rem; }
+  .tile-label { font-size:.66rem; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); }
+  .tile-value { font-size:1.15rem; font-weight:650; margin-top:.15rem; }
+  #graph { overflow-x:auto; background:var(--panel-2); border:1px solid var(--line);
+           border-radius:8px; padding:.75rem; min-height:120px; }
+  #graph svg { display:block; min-width:100%; }
+  .node rect { cursor:pointer; transition:filter .15s; }
+  .node:hover rect { filter:brightness(1.35); }
+  .log { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:.76rem;
+         max-height:340px; overflow-y:auto; background:var(--panel-2);
+         border:1px solid var(--line); border-radius:8px; padding:.6rem; }
+  .log div { padding:.12rem 0; border-bottom:1px solid #1b202a; white-space:pre-wrap;
+             word-break:break-word; }
+  .log .t { color:var(--muted); }
+  .step { border:1px solid var(--line); border-radius:8px; margin-bottom:.5rem;
+          background:var(--panel-2); }
+  .step summary { cursor:pointer; padding:.55rem .7rem; display:flex; gap:.5rem;
+                  align-items:center; flex-wrap:wrap; }
+  .step .body { padding:0 .7rem .7rem; }
+  .step pre { background:#0c0e13; border:1px solid var(--line); border-radius:6px;
+              padding:.6rem; font-size:.76rem; white-space:pre-wrap; word-break:break-word;
+              max-height:280px; overflow:auto; margin:.5rem 0 0; }
+  .badge { font-size:.66rem; padding:.1rem .45rem; border-radius:999px; font-weight:700;
+           text-transform:uppercase; letter-spacing:.04em; color:#0f1115; }
+  .badge.muted { background:#2b3242; color:#c3cad8; font-weight:600; }
+  .badge.warn { background:var(--paused); }
+  .meta { color:var(--muted); font-size:.74rem; margin-left:auto; }
+  .desc { color:#aab3c5; font-size:.82rem; margin:.35rem 0 0; }
+  table { width:100%; border-collapse:collapse; font-size:.8rem; }
+  th,td { text-align:left; padding:.35rem .5rem; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-size:.66rem; text-transform:uppercase; letter-spacing:.06em; }
+  .hint { color:var(--muted); font-size:.78rem; margin:.4rem 0 0; }
+  .empty { color:var(--muted); padding:1.5rem; text-align:center; }
+  .verdict { border-radius:8px; padding:.5rem .7rem; font-size:.82rem; font-weight:600;
+             margin-bottom:.6rem; }
+  .verdict.ok    { background:#12301f; border:1px solid var(--done);   color:#8ff0b5; }
+  .verdict.warn  { background:#3a2f12; border:1px solid var(--paused); color:#ffd894; }
+  .verdict.block { background:#3a1c20; border:1px solid var(--failed); color:#ffb4bc; }
+  .spec { font-size:.78rem; color:#aab3c5; padding:.2rem 0; }
+  .spec b { color:var(--text); font-family:ui-monospace,monospace; }
+  .req-status { font-size:.62rem; padding:.08rem .4rem; border-radius:999px;
+                font-weight:700; text-transform:uppercase; color:#0f1115; }
+  .setup { font-family:ui-monospace,monospace; font-size:.7rem; color:var(--paused);
+           display:block; margin-top:.15rem; word-break:break-all; }
+  #ask-panel { border-color:var(--paused); box-shadow:0 0 0 1px rgba(243,156,18,.25); }
+  .ask-group { border:1px solid var(--line); border-radius:8px; padding:.65rem .75rem;
+               margin-bottom:.6rem; background:var(--panel-2); }
+  .ask-group h3 { margin:0 0 .5rem; font-size:.8rem; font-family:ui-monospace,monospace; }
+  .ask-field { margin-bottom:.55rem; }
+  .ask-field label { display:block; font-size:.8rem; margin-bottom:.2rem; }
+  .ask-field .why { color:var(--muted); font-size:.72rem; display:block; margin-bottom:.25rem; }
+  .ask-err { color:#ffb4bc; font-size:.72rem; margin-top:.2rem; }
+  .action-card { border:1px solid var(--paused); border-radius:8px; padding:.65rem .75rem;
+                 margin-bottom:.6rem; background:#2a2113; }
+  .action-card .what { font-size:.8rem; margin:.25rem 0 .4rem; }
+  .action-card pre { max-height:150px; font-size:.72rem; }
+  #setup-panel { border-color:var(--accent); box-shadow:0 0 0 1px rgba(110,168,254,.25); }
+  .setup-card { border:1px solid var(--line); border-radius:8px; padding:.75rem .85rem;
+                margin-bottom:.6rem; background:var(--panel-2); }
+  .setup-card h3 { margin:0 0 .2rem; font-size:.9rem; }
+  .setup-card .desc { color:#aab3c5; font-size:.8rem; margin:0 0 .5rem; }
+  .setup-card .why { color:var(--accent); font-size:.78rem; margin:0 0 .5rem; }
+  .setup-card ol { margin:.3rem 0 .6rem; padding-left:1.2rem; color:#c3cad8;
+                   font-size:.78rem; line-height:1.6; }
+  .setup-card .cost { color:var(--muted); font-size:.72rem; margin-top:.4rem; }
+  .setup-card .getlink { display:inline-block; margin-bottom:.5rem; font-size:.78rem;
+                         color:var(--accent); }
+  .setup-done { color:var(--done); font-size:.82rem; padding:.5rem 0; }
+  .badge.block { background:var(--failed); color:#fff; }
+  .badge.opt { background:#2b3242; color:#c3cad8; }
+  .guide { border-color:#34415a; background:linear-gradient(135deg,#182131,#161a23); }
+  .guide-title { font-size:1rem; font-weight:700; margin-bottom:.25rem; }
+  .guide-copy { color:#c3cad8; font-size:.84rem; margin-bottom:.65rem; }
+  .progress-track { height:8px; border-radius:999px; background:#252c38; overflow:hidden; }
+  .progress-fill { height:100%; width:0; border-radius:inherit; background:var(--accent);
+                   transition:width .25s ease; }
+  .progress-note { color:var(--muted); font-size:.72rem; margin-top:.3rem; }
+
+  /* Clear, calm application theme. Advanced workflow controls stay available
+     without competing with the one action a new user needs first. */
+  :root {
+    color-scheme:light; --bg:#f5f7fb; --panel:#ffffff; --panel-2:#f8fafc;
+    --line:#dbe2ea; --text:#172033; --muted:#667085; --accent:#2563eb;
+    --done:#16835f; --reused:#2563eb; --failed:#c53939; --paused:#b76e00;
+    --running:#6d4aff; --pending:#7b8494; --cancelled:#697386;
+  }
+  body { background:var(--bg); color:var(--text); font-size:15px; }
+  header { background:rgba(255,255,255,.96); border-color:var(--line); padding:1rem max(1.25rem,calc((100vw - 1440px)/2)); box-shadow:0 1px 5px rgba(16,24,40,.06); }
+  header h1 { font-size:1.08rem; color:#16213b; }
+  .brand-sub { color:var(--muted); font-size:.78rem; }
+  main { max-width:1440px; margin:0 auto; grid-template-columns:minmax(0,1fr) 390px; gap:1.25rem; padding:1.35rem; }
+  .panel { border-color:var(--line); border-radius:14px; box-shadow:0 1px 3px rgba(16,24,40,.05); padding:1.15rem; }
+  .panel h2 { color:#475467; font-size:.76rem; }
+  input,select,textarea,button { color:var(--text); background:#fff; border-color:#cfd8e3; border-radius:9px; min-height:38px; }
+  input:focus,select:focus,textarea:focus,button:focus-visible { outline:3px solid rgba(37,99,235,.18); border-color:var(--accent); }
+  textarea#desc { min-height:118px; font-size:1rem; padding:.8rem; }
+  button { background:#f3f6fa; border-color:#ccd5e1; color:#344054; }
+  button:hover:not(:disabled) { background:#e9eff7; }
+  button.primary { color:#fff; background:var(--accent); border-color:var(--accent); }
+  button.danger { background:#fff5f5; border-color:#f1c7c7; color:#a92727; }
+  .pill,.badge.muted,.badge.opt { background:#e9eef5; color:#475467; }
+  .pill.on { background:#d8f3e8; color:#116149; }
+  .pill.off { background:#fee4e2; color:#9b2c2c; }
+  .guide { background:linear-gradient(135deg,#eef4ff,#f8fbff); border-color:#b9cdfa; }
+  .guide-copy,.desc,.spec,.setup-card .desc { color:#5b6678; }
+  .progress-track { background:#dfe7f2; }
+  #graph,.step,.tile,.ask-group,.setup-card,.log { background:var(--panel-2); border-color:var(--line); }
+  .step pre { background:#f2f5f9; color:#263248; border-color:var(--line); }
+  .log div { border-color:#e6ebf1; }
+  .verdict.ok { background:#ecfdf3; color:#126747; border-color:#8ed8bb; }
+  .verdict.warn { background:#fff8e8; color:#8a5700; border-color:#e8c472; }
+  .verdict.block { background:#fff1f0; color:#9f2929; border-color:#e9aaaa; }
+  .action-card { background:#fff9ec; }
+  .advanced { margin-bottom:1rem; }
+  .advanced > summary { cursor:pointer; list-style:none; background:#fff; border:1px solid var(--line); border-radius:12px; padding:.85rem 1rem; font-weight:700; color:#344054; }
+  .advanced > summary::after { content:"Open"; float:right; color:var(--accent); font-size:.78rem; font-weight:600; }
+  .advanced[open] > summary { margin-bottom:1rem; }
+  .advanced[open] > summary::after { content:"Close"; }
+  .advanced .panel { box-shadow:none; }
+  dialog { border:0; border-radius:16px; padding:1.4rem; width:min(440px,calc(100vw - 2rem));
+           box-shadow:0 24px 60px rgba(16,24,40,.25); color:var(--text); }
+  dialog::backdrop { background:rgba(16,24,40,.45); }
+  @media (max-width:1000px) { main { grid-template-columns:1fr; padding:1rem; } aside { order:2; } }
+  @media (max-width:640px) { header { padding:.75rem; } .brand-sub { display:none; } header #run-picker { max-width:100%!important; width:100%; } .row > button { flex:1 1 auto; } main { padding:.7rem; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Adaptive AI Task Orchestrator</h1>
+  <span class="brand-sub">Describe a goal. AI plans, asks, and completes it.</span>
+  <span class="pill" id="llm-mode">llm: ?</span>
+  <span class="pill" id="ws-state">disconnected</span>
+  <span class="pill" id="identity">not signed in</span>
+  <span class="grow"></span>
+  <button id="btn-new" class="primary">New task</button>
+  <select id="run-picker" style="max-width:260px"></select>
+  <button id="btn-refresh">Refresh</button>
+  <button id="btn-login">Sign in</button>
+</header>
+
+<dialog id="login-dialog">
+  <h2 style="margin-top:0">Sign in to your workspace</h2>
+  <p class="desc">Enter the access key supplied by your administrator, or use your organization’s single sign-on.</p>
+  <label for="login-key">Access key</label>
+  <input id="login-key" type="password" autocomplete="current-password" style="margin:.35rem 0 .8rem">
+  <div class="row">
+    <button class="primary" id="login-key-submit">Continue</button>
+    <button id="login-sso">Organization SSO</button>
+    <button id="login-cancel">Cancel</button>
+  </div>
+  <p class="ask-err" id="login-error"></p>
+</dialog>
+
+<main>
+  <section>
+    <div class="panel">
+      <h2>1 · Tell us what you want done</h2>
+      <textarea id="desc" aria-label="Task description" placeholder="Example: Build and test a task management website with login and a Kanban board."></textarea>
+      <div class="row" style="margin-top:.6rem">
+        <button class="primary" id="btn-plan">Create a plan</button>
+        <button id="btn-run" disabled>Start the work</button>
+        <button id="btn-rerun" disabled>Run from beginning</button>
+        <button id="btn-resume" disabled>Resume</button>
+        <button id="btn-stop" class="danger" disabled>Stop run</button>
+        <label class="row" style="gap:.3rem"><input type="checkbox" id="opt-parallel" checked style="width:auto"> Run independent steps together</label>
+        <label class="row" style="gap:.3rem"><input type="checkbox" id="opt-smart" checked style="width:auto"> Keep work that is still valid</label>
+      </div>
+      <p class="hint" id="plan-hint">Planning uses the configured LLM; with no API key it falls back to a deterministic offline planner.</p>
+    </div>
+
+    <div class="panel guide" id="guide-panel">
+      <h2>What happens next</h2>
+      <div class="guide-title" id="guide-title">Describe what you want completed</div>
+      <div class="guide-copy" id="guide-copy">The AI will ask only for missing facts, build a workflow, choose agents and show what tools it needs.</div>
+      <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+      <div class="progress-note" id="progress-note">No workflow selected</div>
+    </div>
+
+    <div class="panel" id="clarify-panel" hidden>
+      <h2>A few questions first</h2>
+      <div id="clarify"></div>
+    </div>
+
+    <div class="panel">
+      <h2>2 · The plan <span id="graph-note" class="pill"></span></h2>
+      <div id="graph"><div class="empty">No workflow loaded.</div></div>
+      <p class="hint">Click a node to change that step and watch which downstream steps re-run.</p>
+    </div>
+
+    <div class="panel">
+      <h2>3 · Agent work and results
+        <button id="btn-add-step" style="float:right;font-size:.72rem;padding:.2rem .5rem">
+          + Add step</button></h2>
+      <div id="new-step" hidden></div>
+      <div id="steps"><div class="empty">No workflow loaded.</div></div>
+    </div>
+  </section>
+
+  <aside>
+    <div class="panel" id="setup-panel" hidden>
+      <h2>Let's get you set up</h2>
+      <div id="setup"></div>
+    </div>
+
+    <div class="panel" id="ask-panel" hidden>
+      <h2>The workflow needs you</h2>
+      <div id="ask"></div>
+    </div>
+
+    <div class="panel">
+      <h2>What this task needs</h2>
+      <div id="readiness"></div>
+      <div id="specialists"></div>
+      <table id="requirements"><tbody><tr><td class="empty">-</td></tr></tbody></table>
+    </div>
+
+    <div class="panel">
+      <h2>Metrics</h2>
+      <div class="tiles" id="tiles"><div class="empty">-</div></div>
+    </div>
+
+    <details class="advanced">
+      <summary>Administration and tool settings</summary>
+    <div class="panel">
+      <h2>Access &amp; audit <span id="current-role" class="badge muted">local</span></h2>
+      <div id="audit"><div class="empty">Audit data is available to administrators.</div></div>
+    </div>
+
+    <div class="panel">
+      <h2>Tools</h2>
+      <table id="tools"><tbody><tr><td class="empty">-</td></tr></tbody></table>
+      <p class="hint">Break a tool to force the fallback chain, then re-run.</p>
+    </div>
+    </details>
+
+    <div class="panel">
+      <h2>Files created by agents</h2>
+      <div id="workspace-files"><div class="empty">No files yet.</div></div>
+    </div>
+
+    <details class="advanced">
+      <summary>Automation and technical details</summary>
+    <div class="panel">
+      <h2>Reusable workflows</h2>
+      <div class="row">
+        <input id="template-name" placeholder="Template name">
+        <button id="btn-save-template">Save current</button>
+      </div>
+      <div id="templates" style="margin-top:.6rem"><div class="empty">No templates.</div></div>
+    </div>
+
+    <div class="panel">
+      <h2>Run automatically</h2>
+      <p class="hint" style="margin-bottom:.55rem">Repeat this workflow at a fixed interval. Scheduled runs start fresh and never overlap.</p>
+      <div class="row">
+        <input id="schedule-minutes" type="number" min="1" value="60" style="width:90px">
+        <span class="desc">minutes</span>
+        <button id="btn-schedule" class="primary">Add schedule</button>
+      </div>
+      <div id="schedules" style="margin-top:.6rem"><div class="empty">No schedule.</div></div>
+    </div>
+
+    <div class="panel">
+      <h2>Start from another app</h2>
+      <p class="hint" style="margin-bottom:.55rem">Create a webhook, then POST JSON to its URL from a form, service, or another workflow.</p>
+      <div class="row">
+        <input id="webhook-name" value="Incoming event" placeholder="Trigger name">
+        <button id="btn-webhook" class="primary">Create webhook</button>
+      </div>
+      <div id="new-webhook-url"></div>
+      <div id="webhooks" style="margin-top:.6rem"><div class="empty">No webhooks.</div></div>
+    </div>
+
+    <div class="panel">
+      <h2>Live log</h2>
+      <div class="log" id="log"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Agent handoffs</h2>
+      <div id="agent-messages"><div class="empty">No direct handoffs yet.</div></div>
+    </div>
+
+    <div class="panel">
+      <h2>Execution queue</h2>
+      <div id="jobs"><div class="empty">No execution jobs yet.</div></div>
+    </div>
+    </details>
+
+    <div class="panel">
+      <h2>Export</h2>
+      <div class="row">
+        <button data-fmt="json">JSON</button>
+        <button data-fmt="csv">CSV</button>
+        <button data-fmt="html">HTML report</button>
+      </div>
+    </div>
+  </aside>
+</main>
+
+<script>
+"use strict";
+
+const STATUS_COLOURS = {
+  done:"var(--done)", skipped:"var(--reused)", failed:"var(--failed)",
+  paused:"var(--paused)", running:"var(--running)", pending:"var(--pending)",
+  cancelled:"var(--cancelled)", stale:"#e67e22",
+  awaiting_input:"var(--paused)", awaiting_action:"var(--paused)"
+  ,not_applicable:"var(--muted)"
+};
+const STATUS_LABELS = {
+  done:"completed", skipped:"reused", failed:"needs attention",
+  paused:"waiting for approval", running:"working", pending:"not started",
+  cancelled:"not run", stale:"needs update", awaiting_input:"waiting for your answer",
+  awaiting_action:"waiting for final approval"
+  ,not_applicable:"branch not needed"
+};
+
+let runId = null;
+let socket = null;
+let snapshot = null;
+let apiKey = sessionStorage.getItem("orchestrator_api_key") || "";
+let currentRole = "admin";
+let loginWaiter = null;
+
+const $ = (sel) => document.querySelector(sel);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+  ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+
+async function api(path, options = {}, retryAuth = true) {
+  const { headers: extraHeaders = {}, ...requestOptions } = options;
+  const response = await fetch(path, {
+    ...requestOptions,
+    headers: {
+      "Content-Type": "application/json",
+      ...(apiKey ? { "Authorization": `Bearer ${apiKey}` } : {}),
+      ...extraHeaders,
+    },
+  });
+  if (response.status === 401 && retryAuth) {
+    const entered = await requestLogin();
+    if (entered) {
+      return api(path, options, false);
+    }
+  }
+  if (!response.ok) {
+    let detail = response.statusText;
+    try { detail = (await response.json()).detail ?? detail; } catch (_) {}
+    throw new Error(detail);
+  }
+  currentRole = response.headers.get("X-Orchestrator-Role") || currentRole;
+  const roleBadge = document.querySelector("#current-role");
+  if (roleBadge) roleBadge.textContent = currentRole;
+  return response.status === 204 ? null : response.json();
+}
+
+function requestLogin() {
+  if (loginWaiter) return loginWaiter;
+  const dialog = $("#login-dialog");
+  $("#login-error").textContent = "";
+  dialog.showModal();
+  loginWaiter = new Promise((resolve) => { dialog._resolveLogin = resolve; });
+  return loginWaiter.finally(() => { loginWaiter = null; });
+}
+
+async function refreshIdentity() {
+  try {
+    const me = await api("/api/auth/me", {}, false);
+    $("#identity").textContent = `${me.subject} · ${me.organization} · ${me.role}`;
+    $("#btn-login").textContent = "Sign out";
+  } catch (_) {
+    $("#identity").textContent = "not signed in";
+    $("#btn-login").textContent = "Sign in";
+  }
+}
+
+$("#login-key-submit").addEventListener("click", async () => {
+  const entered = $("#login-key").value.trim();
+  if (!entered) { $("#login-error").textContent = "Enter an access key."; return; }
+  apiKey = entered;
+  sessionStorage.setItem("orchestrator_api_key", apiKey);
+  try {
+    await api("/api/auth/me", {}, false);
+    $("#login-dialog").close(); $("#login-dialog")._resolveLogin(true);
+    await refreshIdentity();
+  } catch (err) {
+    apiKey = ""; sessionStorage.removeItem("orchestrator_api_key");
+    $("#login-error").textContent = err.message;
+  }
+});
+$("#login-sso").addEventListener("click", () => { location.href = "/api/auth/login"; });
+$("#login-cancel").addEventListener("click", () => {
+  $("#login-dialog").close(); $("#login-dialog")._resolveLogin(false);
+});
+$("#btn-login").addEventListener("click", async () => {
+  if ($("#btn-login").textContent === "Sign out") {
+    await api("/api/auth/logout", {method:"POST"}, false).catch(() => {});
+    apiKey = ""; sessionStorage.removeItem("orchestrator_api_key"); await refreshIdentity();
+  } else requestLogin();
+});
+
+async function refreshAudit() {
+  if (currentRole !== "admin") {
+    $("#audit").innerHTML = '<div class="empty">Only administrators can view the audit trail.</div>';
+    return;
+  }
+  try {
+    const rows = await api("/api/audit?limit=12");
+    $("#audit").innerHTML = rows.length ? rows.map(row =>
+      `<div class="hint">${new Date(row.ts * 1000).toLocaleTimeString()} · ${esc(row.role)} · ${esc(row.method)} ${esc(row.path)} · ${row.status}</div>`
+    ).join("") : '<div class="empty">No changes recorded yet.</div>';
+  } catch (_) {
+    $("#audit").innerHTML = '<div class="empty">Audit data is unavailable for this role.</div>';
+  }
+}
+
+function log(message, kind = "") {
+  const box = $("#log");
+  const line = document.createElement("div");
+  const time = new Date().toLocaleTimeString();
+  line.innerHTML = `<span class="t">${time}</span> ${esc(message)}`;
+  if (kind) line.style.color = kind;
+  box.prepend(line);
+  while (box.children.length > 300) box.lastChild.remove();
+}
+
+// -- rendering -------------------------------------------------------------
+
+function renderGraph(state) {
+  const host = $("#graph");
+  const levels = state.levels || [];
+  if (!levels.length) { host.innerHTML = '<div class="empty">Empty graph.</div>'; return; }
+
+  const byId = Object.fromEntries(state.steps.map((s) => [s.id, s]));
+  const BW = 180, BH = 56, GX = 36, GY = 78;
+  const widest = Math.max(...levels.map((l) => l.length));
+  const width = widest * (BW + GX) + GX;
+  const height = levels.length * (BH + GY) + GY;
+  const centre = {};
+
+  levels.forEach((level, row) => {
+    const rowWidth = level.length * (BW + GX) - GX;
+    const startX = (width - rowWidth) / 2;
+    level.forEach((id, col) => {
+      centre[id] = { x: startX + col * (BW + GX), y: GY / 2 + row * (BH + GY) };
+    });
+  });
+
+  const edges = [];
+  const nodes = [];
+  for (const step of state.steps) {
+    const pos = centre[step.id];
+    if (!pos) continue;
+    for (const dep of step.depends_on || []) {
+      const from = centre[dep];
+      if (!from) continue;
+      edges.push(`<path d="M ${from.x + BW/2} ${from.y + BH}
+        C ${from.x + BW/2} ${from.y + BH + GY/2},
+          ${pos.x + BW/2} ${pos.y - GY/2}, ${pos.x + BW/2} ${pos.y}"
+        fill="none" stroke="#4a5162" stroke-width="1.6" marker-end="url(#arrow)"/>`);
+    }
+    const status = step.result.status;
+    const colour = STATUS_COLOURS[status] || "var(--pending)";
+    const tool = step.result.tool_used || step.requires_tool;
+    const sub = `${status}${tool ? " · " + tool : ""} · ${step.result.duration_s.toFixed(2)}s`;
+    nodes.push(`<g class="node" data-step="${esc(step.id)}">
+      <rect x="${pos.x}" y="${pos.y}" width="${BW}" height="${BH}" rx="8"
+            fill="#1b1f2a" stroke="${colour}" stroke-width="2.5"/>
+      <text x="${pos.x + 12}" y="${pos.y + 22}" fill="#e8ecf4" font-size="13"
+            font-family="ui-monospace,monospace">${esc(step.id.slice(0, 20))}</text>
+      <text x="${pos.x + 12}" y="${pos.y + 41}" fill="${colour}" font-size="11">${esc(sub)}</text>
+      ${step.result.used_fallback ? `<circle cx="${pos.x + BW - 14}" cy="${pos.y + 14}" r="5" fill="var(--paused)"/>` : ""}
+    </g>`);
+  }
+
+  host.innerHTML = `<svg viewBox="0 0 ${width} ${height}" width="${Math.max(width, 320)}">
+    <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6"
+      markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4a5162"/></marker></defs>
+    ${edges.join("")}${nodes.join("")}</svg>`;
+
+  host.querySelectorAll(".node").forEach((node) => {
+    node.addEventListener("click", () => promptChange(node.dataset.step));
+  });
+  $("#graph-note").textContent = `${state.steps.length} steps · ${levels.length} levels`;
+}
+
+function renderSteps(state) {
+  $("#steps").innerHTML = state.steps.map((step) => {
+    const r = step.result;
+    const colour = STATUS_COLOURS[r.status] || "var(--pending)";
+    const badges = [
+      `<span class="badge" style="background:${colour}">${esc(STATUS_LABELS[r.status] || r.status)}</span>`,
+      `<span class="badge muted">${esc(step.agent_role)}</span>`,
+    ];
+    if (step.requires_tool) {
+      const label = esc(r.tool_used || step.requires_tool);
+      badges.push(r.used_fallback
+        ? `<span class="badge warn">fallback &rarr; ${label}</span>`
+        : `<span class="badge muted">${label}</span>`);
+    }
+    const approve = r.status === "paused"
+      ? `<button data-approve="${esc(step.id)}">Approve</button>` : "";
+    return `<details class="step"${r.status === "failed" ? " open" : ""}>
+      <summary><b>${esc(step.id)}</b>${badges.join("")}
+        <span class="meta">${r.duration_s.toFixed(2)}s · ${r.usage.total_tokens} tok ·
+          deps: ${esc((step.depends_on || []).join(", ") || "-")}</span></summary>
+      <div class="body">
+        <p class="desc">${esc(step.description)}</p>
+        <div class="row" style="margin-top:.4rem">
+          <button data-edit="${esc(step.id)}">Edit</button>
+          <button data-change="${esc(step.id)}">Change requirement</button>
+          <button data-pause="${esc(step.id)}">Pause before</button>
+          <button class="danger" data-delete="${esc(step.id)}">Delete</button>
+          ${approve}
+        </div>
+        <div id="editor-${esc(step.id)}"></div>
+        <pre>${esc(r.error || r.output || "(no output yet)")}</pre>
+      </div></details>`;
+  }).join("");
+
+  $("#steps").querySelectorAll("[data-edit]").forEach((b) =>
+    b.addEventListener("click", () => openEditor(b.dataset.edit)));
+  $("#steps").querySelectorAll("[data-delete]").forEach((b) =>
+    b.addEventListener("click", () => deleteStep(b.dataset.delete)));
+  $("#steps").querySelectorAll("[data-change]").forEach((b) =>
+    b.addEventListener("click", () => promptChange(b.dataset.change)));
+  $("#steps").querySelectorAll("[data-pause]").forEach((b) =>
+    b.addEventListener("click", () => act(`/api/runs/${runId}/steps/${b.dataset.pause}/pause`)));
+  $("#steps").querySelectorAll("[data-approve]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      await act(`/api/runs/${runId}/steps/${b.dataset.approve}/approve`);
+      await act(`/api/runs/${runId}/resume`);
+    }));
+}
+
+function renderGuide(state) {
+  const steps = state.steps || [];
+  const complete = steps.filter(s => ["done", "skipped"].includes(s.result.status)).length;
+  const failed = steps.filter(s => s.result.status === "failed").length;
+  const inputs = Object.keys(state.pending_inputs || {}).length;
+  const actions = Object.keys(state.pending_actions || {}).length;
+  const blockers = state.requirements?.blockers?.length || 0;
+  const percent = steps.length ? Math.round(complete * 100 / steps.length) : 0;
+  let title = "Workflow ready to start";
+  let copy = "Review the planned agents and steps, then select Run workflow.";
+
+  if (state.busy) {
+    title = "Your agents are working";
+    copy = "You can follow each step below. New results and files appear automatically.";
+  } else if (inputs) {
+    title = "Answer the highlighted question";
+    copy = "The workflow needs information only you can provide before it can continue.";
+  } else if (actions) {
+    title = "Review the action before it happens";
+    copy = "Check the exact action in the orange panel, then approve or reject it.";
+  } else if (blockers) {
+    title = "Connect the missing requirement";
+    copy = "Follow the setup instructions on the right. The workflow will be ready afterwards.";
+  } else if (failed) {
+    title = `${failed} step${failed === 1 ? "" : "s"} need attention`;
+    copy = "Open the failed step to see the reason, edit it if needed, then resume.";
+  } else if (steps.length && complete === steps.length) {
+    title = "Workflow completed";
+    copy = "Review the results and download files created by the agents from the right panel.";
+  }
+  $("#guide-title").textContent = title;
+  $("#guide-copy").textContent = copy;
+  $("#progress-fill").style.width = `${percent}%`;
+  $("#progress-note").textContent = `${complete} of ${steps.length} steps completed · ${percent}%`;
+}
+
+function renderMetrics(state) {
+  const m = state.metrics;
+  const s = m.by_status || {};
+  const tiles = [
+    ["Steps", m.steps], ["Done", s.done || 0], ["Reused", s.skipped || 0],
+    ["Failed", s.failed || 0], ["LLM calls", m.usage.calls],
+    ["Tokens", m.usage.total_tokens.toLocaleString()],
+    ["Cost", "$" + m.usage.cost_usd.toFixed(6)],
+    ["Step time", m.total_step_seconds.toFixed(2) + "s"],
+  ];
+  $("#tiles").innerHTML = tiles.map(([label, value]) =>
+    `<div class="tile"><div class="tile-label">${esc(label)}</div>
+     <div class="tile-value">${esc(value)}</div></div>`).join("");
+}
+
+function renderTools(state) {
+  $("#tools").innerHTML = `<tbody>${state.tools.map((t) => `
+    <tr>
+      <td><b>${esc(t.name)}</b><br><span style="color:var(--muted);font-size:.7rem">
+        ${esc(t.capability)} · ${t.live ? "live" : "simulated"}</span></td>
+      <td style="color:${t.broken ? "var(--failed)" : "var(--muted)"}">
+        ${t.broken ? "broken" : "ok"}</td>
+      <td style="text-align:right">
+        <button data-tool="${esc(t.name)}" data-op="${t.broken ? "repair" : "break"}"
+          class="${t.broken ? "" : "danger"}">${t.broken ? "Repair" : "Break"}</button></td>
+    </tr>`).join("")}</tbody>`;
+
+  $("#tools").querySelectorAll("[data-tool]").forEach((b) =>
+    b.addEventListener("click", () =>
+      act(`/api/runs/${runId}/tools/${b.dataset.tool}/${b.dataset.op}?rerun=true`)));
+}
+
+function renderFiles(state) {
+  const files = state.workspace_files || [];
+  const host = $("#workspace-files");
+  if (!files.length) {
+    host.innerHTML = '<div class="empty">No files yet.</div>';
+    return;
+  }
+  host.innerHTML = files.map((file) => `<div class="row" style="margin:.35rem 0">
+    <button data-file="${esc(file.path)}">Download</button>
+    <span style="font-family:ui-monospace,monospace;font-size:.75rem">${esc(file.path)}</span>
+    <span class="meta">${file.size.toLocaleString()} bytes</span>
+  </div>`).join("");
+  host.querySelectorAll("[data-file]").forEach((button) =>
+    button.addEventListener("click", () => downloadWorkspaceFile(button.dataset.file)));
+}
+
+async function downloadWorkspaceFile(path) {
+  try {
+    const response = await fetch(`/api/runs/${runId}/files/${encodeURIComponent(path)}`, {
+      headers: apiKey ? { "Authorization": `Bearer ${apiKey}` } : {},
+    });
+    if (!response.ok) throw new Error((await response.json()).detail || response.statusText);
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = path.split("/").pop();
+    link.click();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    log("file download failed: " + err.message, "var(--failed)");
+  }
+}
+
+function renderSchedules(state) {
+  const schedules = state.schedules || [];
+  const host = $("#schedules");
+  if (!schedules.length) {
+    host.innerHTML = '<div class="empty">No schedule.</div>';
+    return;
+  }
+  host.innerHTML = schedules.map(s => {
+    const minutes = Math.round(s.interval_seconds / 60);
+    const next = s.enabled ? new Date(s.next_run_at * 1000).toLocaleString() : "paused";
+    return `<div class="ask-group" style="padding:.5rem .6rem">
+      <div><b>Every ${minutes} minute${minutes === 1 ? "" : "s"}</b></div>
+      <div class="hint">Next run: ${esc(next)}</div>
+      <div class="row" style="margin-top:.35rem">
+        <button data-toggle-schedule="${s.id}" data-enabled="${s.enabled ? "1" : "0"}">
+          ${s.enabled ? "Pause" : "Resume"}</button>
+        <button class="danger" data-delete-schedule="${s.id}">Delete</button>
+      </div>
+    </div>`;
+  }).join("");
+  host.querySelectorAll("[data-toggle-schedule]").forEach(button =>
+    button.addEventListener("click", async () => {
+      await api(`/api/runs/${runId}/schedules/${button.dataset.toggleSchedule}`, {
+        method: "PATCH",
+        body: JSON.stringify({ enabled: button.dataset.enabled !== "1" }),
+      });
+      render(await api(`/api/runs/${runId}`));
+    }));
+  host.querySelectorAll("[data-delete-schedule]").forEach(button =>
+    button.addEventListener("click", async () => {
+      await api(`/api/runs/${runId}/schedules/${button.dataset.deleteSchedule}`, {
+        method: "DELETE",
+      });
+      render(await api(`/api/runs/${runId}`));
+    }));
+}
+
+function renderWebhooks(state) {
+  const webhooks = state.webhooks || [];
+  const host = $("#webhooks");
+  if (!webhooks.length) {
+    host.innerHTML = '<div class="empty">No webhooks.</div>';
+    return;
+  }
+  host.innerHTML = webhooks.map(hook => {
+    const last = hook.last_triggered_at
+      ? new Date(hook.last_triggered_at * 1000).toLocaleString() : "never";
+    return `<div class="ask-group" style="padding:.5rem .6rem">
+      <div><b>${esc(hook.name)}</b> · ${hook.enabled ? "active" : "paused"}</div>
+      <div class="hint">Last triggered: ${esc(last)}</div>
+      <div class="row" style="margin-top:.35rem">
+        <button data-toggle-webhook="${hook.id}" data-enabled="${hook.enabled ? "1" : "0"}">
+          ${hook.enabled ? "Pause" : "Resume"}</button>
+        <button class="danger" data-delete-webhook="${hook.id}">Delete</button>
+      </div>
+    </div>`;
+  }).join("");
+  host.querySelectorAll("[data-toggle-webhook]").forEach(button =>
+    button.addEventListener("click", async () => {
+      await api(`/api/runs/${runId}/webhooks/${button.dataset.toggleWebhook}`, {
+        method: "PATCH",
+        body: JSON.stringify({ enabled: button.dataset.enabled !== "1" }),
+      });
+      render(await api(`/api/runs/${runId}`));
+    }));
+  host.querySelectorAll("[data-delete-webhook]").forEach(button =>
+    button.addEventListener("click", async () => {
+      await api(`/api/runs/${runId}/webhooks/${button.dataset.deleteWebhook}`, {
+        method: "DELETE",
+      });
+      render(await api(`/api/runs/${runId}`));
+    }));
+}
+
+function renderAgentMessages(state) {
+  const messages = state.agent_messages || [];
+  $("#agent-messages").innerHTML = messages.length ? messages.map(m =>
+    `<div class="ask-group"><b>${esc(m.from)} → ${esc(m.to)}</b><p class="desc">${esc(m.message)}</p></div>`
+  ).join("") : '<div class="empty">No direct handoffs yet.</div>';
+}
+
+function renderJobs(state) {
+  const jobs = state.jobs || [];
+  $("#jobs").innerHTML = jobs.length ? jobs.slice(0, 8).map(job => {
+    const colour = job.status === "completed" ? "var(--done)" :
+      job.status === "failed" ? "var(--failed)" : "var(--running)";
+    return `<div class="hint"><span style="color:${colour}">●</span>
+      #${job.id} ${esc(job.operation)} · ${esc(job.status)}
+      ${job.error ? `<br><span style="color:var(--failed)">${esc(job.error)}</span>` : ""}</div>`;
+  }).join("") : '<div class="empty">No execution jobs yet.</div>';
+}
+
+async function refreshTemplates() {
+  const templates = await api("/api/templates");
+  const host = $("#templates");
+  host.innerHTML = templates.length ? templates.map(t => `<div class="ask-group">
+    <b>${esc(t.name)}</b><p class="hint">${esc(t.description || "Saved workflow")}</p>
+    <div class="row"><button data-launch-template="${t.id}">Create workflow</button>
+    <button class="danger" data-delete-template="${t.id}">Delete</button></div></div>`).join("")
+    : '<div class="empty">No templates.</div>';
+  host.querySelectorAll("[data-launch-template]").forEach(button =>
+    button.addEventListener("click", async () => {
+      const state = await api(`/api/templates/${button.dataset.launchTemplate}/launch`, {
+        method: "POST", body: JSON.stringify({}),
+      });
+      runId = state.run_id; render(state); await refreshRuns(); connect(runId);
+      log("created a new workflow from the template", "var(--done)");
+    }));
+  host.querySelectorAll("[data-delete-template]").forEach(button =>
+    button.addEventListener("click", async () => {
+      await api(`/api/templates/${button.dataset.deleteTemplate}`, {method: "DELETE"});
+      await refreshTemplates();
+    }));
+}
+
+const REQ_COLOURS = {
+  ready: "var(--done)", simulated: "var(--paused)",
+  fallback: "var(--reused)", missing: "var(--failed)",
+};
+
+function renderRequirements(state) {
+  const req = state.requirements;
+  if (!req) return;
+
+  // Verdict banner: can this actually run, and how cleanly?
+  let cls = "ok", text = "Ready to run — everything required is configured.";
+  if (!req.can_run) {
+    cls = "block";
+    text = `Blocked — ${req.blockers.length} requirement(s) missing: ${req.blockers.join(", ")}`;
+  } else if (req.degraded.length) {
+    cls = "warn";
+    text = `Ready, with ${req.degraded.length} capability(ies) degraded — those steps ` +
+           `still run, but their tool output is simulated.`;
+  }
+  $("#readiness").innerHTML = `<div class="verdict ${cls}">${esc(text)}</div>`;
+
+  $("#specialists").innerHTML = req.agents.length
+    ? `<div style="margin-bottom:.5rem">${req.agents.map(a =>
+        `<div class="spec"><b>${esc(a.role)}</b>${a.why ? " — " + esc(a.why) : ""}</div>`
+      ).join("")}</div>`
+    : "";
+
+  $("#requirements").innerHTML = req.requirements.length
+    ? `<tbody>${req.requirements.map(r => `
+        <tr>
+          <td><b>${esc(r.name)}</b><br>
+            <span style="color:var(--muted);font-size:.7rem">${esc(r.kind)}${
+              r.why ? " · " + esc(r.why) : ""}</span>
+            ${r.status === "missing" && r.setup
+              ? `<code class="setup">${esc(r.setup)}</code>` : ""}</td>
+          <td style="text-align:right"><span class="req-status"
+            style="background:${REQ_COLOURS[r.status] || "var(--pending)"}">${esc(r.status)}</span></td>
+        </tr>`).join("")}</tbody>`
+    : '<tbody><tr><td class="empty">No external capabilities needed.</td></tr></tbody>';
+}
+
+// --- guided setup: explain what's missing and how to get it ---------------
+
+let setupSignature = null;
+
+async function refreshSetup() {
+  let data;
+  try {
+    data = await api("/api/setup/questions" + (runId ? `?run_id=${runId}` : ""));
+  } catch (err) {
+    return;
+  }
+
+  const signature = JSON.stringify(data.questions.map(q => q.env_var));
+  if (signature === setupSignature) return;   // don't wipe what's being typed
+  setupSignature = signature;
+
+  const panel = $("#setup-panel");
+  if (!data.questions.length) {
+    // Only show the all-clear if we had been asking for something.
+    panel.hidden = !data.llm_configured ? true : panel.hidden;
+    if (!panel.hidden) {
+      $("#setup").innerHTML =
+        `<div class="setup-done">Everything this workflow needs is configured
+         (${esc(data.llm_mode)}). You're ready to run.</div>`;
+    }
+    return;
+  }
+
+  panel.hidden = false;
+  const groups = data.questions.filter(q => q.group === "ai_provider");
+  const rest = data.questions.filter(q => q.group !== "ai_provider");
+
+  let html = "";
+  if (groups.length) {
+    html += `<p class="desc">You're currently on <b>${esc(data.llm_mode)}</b> — agents
+      produce placeholder text. Add <b>any one</b> of these to get real AI output:</p>`;
+    html += groups.map(cardFor).join("");
+  }
+  if (rest.length) {
+    html += `<p class="desc" style="margin-top:.6rem">This workflow also needs:</p>`;
+    html += rest.map(cardFor).join("");
+  }
+  $("#setup").innerHTML = html;
+
+  $("#setup").querySelectorAll("[data-save]").forEach(btn =>
+    btn.addEventListener("click", () => saveCredential(btn.dataset.save)));
+}
+
+function cardFor(q) {
+  const id = `cred-${q.env_var}`;
+  const steps = (q.steps || []).length
+    ? `<ol>${q.steps.map(s => `<li>${esc(s)}</li>`).join("")}</ol>` : "";
+  const link = q.url
+    ? `<a class="getlink" href="${esc(q.url)}" target="_blank" rel="noopener">
+         Get it here &rarr; ${esc(q.url)}</a>` : "";
+  const badge = q.blocking
+    ? '<span class="badge block">required</span>'
+    : '<span class="badge opt">optional</span>';
+  return `<div class="setup-card">
+    <h3>${esc(q.label)} ${badge}</h3>
+    <p class="desc">${esc(q.description)}</p>
+    ${q.why_this_workflow ? `<p class="why">Why: ${esc(q.why_this_workflow)}</p>` : ""}
+    ${steps}${link}
+    <div class="row">
+      <input id="${id}" type="${q.secret ? "password" : "text"}"
+             placeholder="${esc(q.placeholder || "")}" class="grow">
+      <button class="primary" data-save="${esc(q.env_var)}">Save</button>
+    </div>
+    <div class="ask-err" id="${id}-err"></div>
+    ${q.cost_note ? `<div class="cost">${esc(q.cost_note)}</div>` : ""}
+  </div>`;
+}
+
+async function saveCredential(envVar) {
+  const input = document.getElementById(`cred-${envVar}`);
+  const errBox = document.getElementById(`cred-${envVar}-err`);
+  errBox.textContent = "";
+  const value = (input.value || "").trim();
+  if (!value) { errBox.textContent = "Paste the value first."; return; }
+
+  try {
+    const result = await api("/api/setup/credentials", {
+      method: "POST", body: JSON.stringify({ env_var: envVar, value }),
+    });
+    log(`saved ${envVar} — now using ${result.llm_mode}`, "var(--done)");
+    input.value = "";
+    setupSignature = null;            // force a rebuild; this one is answered
+    await refreshSetup();
+    await refreshHealth();
+  } catch (err) {
+    errBox.textContent = err.message;  // server-side validation is authoritative
+  }
+}
+
+async function refreshHealth() {
+  try {
+    const health = await api("/api/health");
+    $("#llm-mode").textContent = "llm: " + health.config.llm_mode;
+    await refreshIdentity();
+  } catch (_) {}
+}
+
+// --- the n8n bit: ask the operator for what only they can supply ----------
+
+function fieldFor(stepId, req) {
+  const id = `in-${stepId}-${req.name}`;
+  const req_ = req.required ? " *" : "";
+  let control;
+  if (req.type === "choice") {
+    control = `<select id="${id}">${req.options.map(o =>
+      `<option${o === req.default ? " selected" : ""}>${esc(o)}</option>`).join("")}</select>`;
+  } else if (req.type === "boolean") {
+    control = `<select id="${id}"><option value="yes">yes</option>
+               <option value="no" selected>no</option></select>`;
+  } else if (req.type === "multiline") {
+    control = `<textarea id="${id}" rows="3"></textarea>`;
+  } else {
+    const kind = { number: "number", email: "email", url: "url", secret: "password" }[req.type]
+                 || "text";
+    control = `<input id="${id}" type="${kind}"
+                 value="${esc(req.default ?? "")}" placeholder="${esc(req.type)}">`;
+  }
+  return `<div class="ask-field">
+    <label for="${id}">${esc(req.prompt || req.name)}${req_}</label>
+    ${req.why ? `<span class="why">${esc(req.why)}</span>` : ""}
+    ${control}
+    <div class="ask-err" id="${id}-err"></div>
+  </div>`;
+}
+
+let askSignature = null;
+
+function renderAsk(state) {
+  const inputs = state.pending_inputs || {};
+  const actions = state.pending_actions || {};
+  const hasWork = Object.keys(inputs).length || Object.keys(actions).length;
+  $("#ask-panel").hidden = !hasWork;
+  if (!hasWork) { $("#ask").innerHTML = ""; askSignature = null; return; }
+
+  // Snapshots arrive continuously over the WebSocket. Re-rendering on every
+  // one would wipe out half-typed answers and any validation message shown
+  // against a field, so only rebuild when the questions themselves change.
+  const signature = JSON.stringify([
+    Object.entries(inputs).map(([s, rs]) => [s, rs.map(r => [r.name, r.provided])]),
+    Object.keys(actions).sort(),
+  ]);
+  if (signature === askSignature) return;
+  askSignature = signature;
+
+  const inputBlocks = Object.entries(inputs).map(([stepId, reqs]) => `
+    <div class="ask-group" data-step="${esc(stepId)}">
+      <h3>${esc(stepId)}</h3>
+      ${reqs.map(r => fieldFor(stepId, r)).join("")}
+      <button class="primary" data-submit="${esc(stepId)}">Submit &amp; continue</button>
+    </div>`).join("");
+
+  const actionBlocks = Object.entries(actions).map(([stepId, a]) => `
+    <div class="action-card">
+      <h3 style="margin:0;font-size:.8rem">${esc(stepId)} — approval needed</h3>
+      <div class="what"><b>${esc(a.tool)}</b>${a.irreversible ? " · irreversible" : ""}<br>
+        ${esc(a.preview)}</div>
+      <pre>${esc(a.payload_preview || "")}</pre>
+      <div class="row" style="margin-top:.5rem">
+        <button class="primary" data-approve-action="${esc(stepId)}">Do it</button>
+        <button class="danger" data-reject-action="${esc(stepId)}">Reject</button>
+      </div>
+    </div>`).join("");
+
+  $("#ask").innerHTML = inputBlocks + actionBlocks;
+
+  $("#ask").querySelectorAll("[data-submit]").forEach(btn =>
+    btn.addEventListener("click", () => submitInputs(btn.dataset.submit, inputs)));
+  $("#ask").querySelectorAll("[data-approve-action]").forEach(btn =>
+    btn.addEventListener("click", () =>
+      act(`/api/runs/${runId}/actions/${btn.dataset.approveAction}/approve`)));
+  $("#ask").querySelectorAll("[data-reject-action]").forEach(btn =>
+    btn.addEventListener("click", () =>
+      act(`/api/runs/${runId}/actions/${btn.dataset.rejectAction}/reject`, {
+        method: "POST", body: JSON.stringify({ reason: "rejected from the dashboard" }) })));
+}
+
+async function submitInputs(stepId, inputs) {
+  const values = {};
+  for (const req of inputs[stepId]) {
+    const el = document.getElementById(`in-${stepId}-${req.name}`);
+    document.getElementById(`in-${stepId}-${req.name}-err`).textContent = "";
+    if (el && el.value !== "") values[req.name] = el.value;
+  }
+  try {
+    const result = await api(`/api/runs/${runId}/steps/${stepId}/inputs`, {
+      method: "POST", body: JSON.stringify({ values, resume: true }),
+    });
+    log(`inputs supplied for ${stepId}` +
+        (result.still_pending.length ? `, still need: ${result.still_pending.join(", ")}` : ""),
+        "var(--done)");
+  } catch (err) {
+    // Server-side validation is authoritative; surface it on the field.
+    const match = /'([^']+)'/.exec(err.message);
+    const target = match && document.getElementById(`in-${stepId}-${match[1]}-err`);
+    if (target) target.textContent = err.message;
+    else log("input rejected: " + err.message, "var(--failed)");
+  }
+}
+
+function render(state) {
+  snapshot = state;
+  renderGraph(state);
+  renderGuide(state);
+  renderSteps(state);
+  renderMetrics(state);
+  renderTools(state);
+  renderFiles(state);
+  renderSchedules(state);
+  renderWebhooks(state);
+  renderAgentMessages(state);
+  renderJobs(state);
+  renderRequirements(state);
+  renderAsk(state);
+  refreshSetup();
+  const has = Boolean(runId);
+  ["#btn-run", "#btn-rerun", "#btn-resume"].forEach((id) => { $(id).disabled = !has || state.busy; });
+  $("#btn-stop").disabled = !has || !state.busy || state.cancellation_requested;
+  $("#btn-stop").textContent = state.cancellation_requested ? "Stopping…" : "Stop run";
+}
+
+// -- actions ---------------------------------------------------------------
+
+async function act(path, options = { method: "POST" }) {
+  try {
+    const result = await api(path, options);
+    if (result && result.impact) {
+      log(`impact: ${result.impact.affected_count} affected, ` +
+          `${result.impact.reusable_count} reusable`, "var(--accent)");
+    }
+    return result;
+  } catch (err) {
+    log("error: " + err.message, "var(--failed)");
+  }
+}
+
+// --- editing the workflow -------------------------------------------------
+
+function stepFormFields(prefix, step, allSteps) {
+  const tools = (snapshot?.tools || []).map(t => t.name);
+  const deps = step ? step.depends_on : [];
+  const condition = step?.condition || {};
+  return `
+    <div class="ask-field">
+      <label>What this step should produce</label>
+      <textarea id="${prefix}-description" rows="2">${esc(step ? step.description : "")}</textarea>
+    </div>
+    <div class="row">
+      <div class="ask-field grow">
+        <label>Specialist</label>
+        <input id="${prefix}-role" value="${esc(step ? step.agent_role : "generic")}">
+      </div>
+      <div class="ask-field grow">
+        <label>Tool</label>
+        <select id="${prefix}-tool">
+          <option value="">— none —</option>
+          ${tools.map(t => `<option${step && step.requires_tool === t ? " selected" : ""}
+            >${esc(t)}</option>`).join("")}
+        </select>
+      </div>
+    </div>
+    <div class="ask-field">
+      <label>Runs after (hold Ctrl to pick several)</label>
+      <select id="${prefix}-deps" multiple size="${Math.min(4, Math.max(2, allSteps.length))}">
+        ${allSteps.filter(s => !step || s.id !== step.id).map(s =>
+          `<option${deps.includes(s.id) ? " selected" : ""}>${esc(s.id)}</option>`).join("")}
+      </select>
+    </div>
+    <div class="ask-field">
+      <label>Run only when (optional)</label>
+      <div class="row">
+        <input id="${prefix}-condition-source" placeholder="review or trigger.status"
+          value="${esc(condition.source || "")}">
+        <select id="${prefix}-condition-operator">
+          ${["contains","not_contains","equals","not_equals","exists","truthy"].map(op =>
+            `<option${condition.operator === op ? " selected" : ""}>${op}</option>`).join("")}
+        </select>
+        <input id="${prefix}-condition-value" placeholder="value"
+          value="${esc(condition.value ?? "")}">
+      </div>
+      <span class="hint">Uses an earlier step's output or incoming webhook data. No code is executed.</span>
+    </div>
+    <label class="row" style="gap:.35rem;font-size:.8rem">
+      <input type="checkbox" id="${prefix}-approval" style="width:auto"
+        ${step && step.requires_approval ? "checked" : ""}> pause for my approval first
+    </label>
+    <div class="ask-err" id="${prefix}-err"></div>`;
+}
+
+function readStepForm(prefix) {
+  const picked = [...document.getElementById(`${prefix}-deps`).selectedOptions].map(o => o.value);
+  const source = document.getElementById(`${prefix}-condition-source`).value.trim();
+  return {
+    description: document.getElementById(`${prefix}-description`).value.trim(),
+    agent_role: document.getElementById(`${prefix}-role`).value.trim() || "generic",
+    requires_tool: document.getElementById(`${prefix}-tool`).value || null,
+    depends_on: picked,
+    requires_approval: document.getElementById(`${prefix}-approval`).checked,
+    condition: source ? {
+      source,
+      operator: document.getElementById(`${prefix}-condition-operator`).value,
+      value: document.getElementById(`${prefix}-condition-value`).value,
+    } : {},
+  };
+}
+
+function openEditor(stepId) {
+  const step = snapshot.steps.find(s => s.id === stepId);
+  const host = document.getElementById(`editor-${stepId}`);
+  if (host.innerHTML) { host.innerHTML = ""; return; }   // toggle closed
+
+  host.innerHTML = `<div class="ask-group" style="margin-top:.5rem">
+    ${stepFormFields(`ed-${stepId}`, step, snapshot.steps)}
+    <div class="row">
+      <button class="primary" id="save-${stepId}">Save</button>
+      <button id="saverun-${stepId}">Save &amp; re-run</button>
+      <button id="cancel-${stepId}">Cancel</button>
+    </div></div>`;
+
+  const save = async (rerun) => {
+    const body = { ...readStepForm(`ed-${stepId}`), rerun };
+    try {
+      const result = await api(`/api/runs/${runId}/steps/${stepId}`, {
+        method: "PATCH", body: JSON.stringify(body),
+      });
+      log(result.changed.length
+        ? `${stepId}: changed ${result.changed.join(", ")}`
+        : `${stepId}: nothing changed`, "var(--done)");
+      host.innerHTML = "";
+      render(await api(`/api/runs/${runId}`));
+    } catch (err) {
+      // The server validates cycles and missing deps; show it on the form.
+      document.getElementById(`ed-${stepId}-err`).textContent = err.message;
+    }
+  };
+  document.getElementById(`save-${stepId}`).addEventListener("click", () => save(false));
+  document.getElementById(`saverun-${stepId}`).addEventListener("click", () => save(true));
+  document.getElementById(`cancel-${stepId}`).addEventListener("click",
+    () => { host.innerHTML = ""; });
+}
+
+async function deleteStep(stepId) {
+  const step = snapshot.steps.find(s => s.id === stepId);
+  const dependents = snapshot.steps.filter(s => s.depends_on.includes(stepId)).map(s => s.id);
+  const warning = dependents.length
+    ? `\n\n${dependents.join(", ")} depend on it and will need to re-run.` : "";
+  if (!window.confirm(`Delete step "${stepId}"?${warning}`)) return;
+  await act(`/api/runs/${runId}/steps/${stepId}`, { method: "DELETE" });
+  log(`deleted ${stepId}`, "var(--paused)");
+  render(await api(`/api/runs/${runId}`));
+}
+
+function openNewStepForm() {
+  const host = $("#new-step");
+  if (!host.hidden) { host.hidden = true; host.innerHTML = ""; return; }
+  if (!runId) { log("plan or create a workflow first", "var(--failed)"); return; }
+
+  host.hidden = false;
+  host.innerHTML = `<div class="ask-group">
+    <h3>New step</h3>
+    <div class="ask-field">
+      <label>Step id (short, no spaces)</label>
+      <input id="ns-id" placeholder="e.g. review_copy">
+    </div>
+    ${stepFormFields("ns", null, snapshot ? snapshot.steps : [])}
+    <div class="row">
+      <button class="primary" id="ns-save">Add step</button>
+      <button id="ns-cancel">Cancel</button>
+    </div></div>`;
+
+  $("#ns-cancel").addEventListener("click", () => { host.hidden = true; host.innerHTML = ""; });
+  $("#ns-save").addEventListener("click", async () => {
+    const id = $("#ns-id").value.trim().replace(/\s+/g, "_");
+    const errBox = document.getElementById("ns-err");
+    if (!id) { errBox.textContent = "Give the step an id."; return; }
+    const body = { id, ...readStepForm("ns") };
+    if (!body.description) { errBox.textContent = "Say what the step should produce."; return; }
+    try {
+      await api(`/api/runs/${runId}/steps`, { method: "POST", body: JSON.stringify(body) });
+      log(`added step ${id}`, "var(--done)");
+      host.hidden = true; host.innerHTML = "";
+      render(await api(`/api/runs/${runId}`));
+    } catch (err) {
+      errBox.textContent = err.message;
+    }
+  });
+}
+
+function startNewWorkflow() {
+  // Deselect the current run so nothing carries over implicitly.
+  if (socket) { socket.onclose = null; socket.close(); socket = null; }
+  runId = null;
+  snapshot = null;
+  askSignature = null;
+  setupSignature = null;
+  $("#desc").value = "";
+  $("#clarify-panel").hidden = true;
+  $("#ask-panel").hidden = true;
+  $("#new-step").hidden = true;
+  $("#new-webhook-url").innerHTML = "";
+  $("#graph").innerHTML = '<div class="empty">Describe a task above to begin.</div>';
+  $("#steps").innerHTML = '<div class="empty">No workflow loaded.</div>';
+  $("#guide-title").textContent = "Describe what you want completed";
+  $("#guide-copy").textContent = "The AI will ask only for missing facts, build a workflow, choose agents and show what tools it needs.";
+  $("#progress-fill").style.width = "0%";
+  $("#progress-note").textContent = "No workflow selected";
+  $("#run-picker").value = "";
+  ["#btn-run", "#btn-rerun", "#btn-resume", "#btn-stop"].forEach(id => { $(id).disabled = true; });
+  $("#desc").focus();
+  log("started a new workflow — nothing from the previous one carries over");
+  refreshSetup();
+}
+
+async function promptChange(stepId) {
+  const step = snapshot?.steps.find((s) => s.id === stepId);
+  const next = window.prompt(
+    `New requirement for "${stepId}".\n\nCurrent: ${step ? step.description : ""}`,
+    "");
+  if (next === null || !next.trim()) return;
+  log(`change requested on ${stepId}`, "var(--accent)");
+  await act(`/api/runs/${runId}/steps/${stepId}/change`, {
+    method: "POST",
+    body: JSON.stringify({ new_requirement: next.trim() }),
+  });
+}
+
+function connect(id) {
+  if (socket) { socket.onclose = null; socket.close(); }
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  socket = new WebSocket(`${proto}://${location.host}/ws/${id}`);
+  socket.onopen = () => {
+    if (apiKey) socket.send(JSON.stringify({ type: "auth", token: apiKey }));
+    $("#ws-state").textContent = "live";
+    $("#ws-state").className = "pill on";
+  };
+  socket.onclose = () => {
+    $("#ws-state").textContent = "disconnected";
+    $("#ws-state").className = "pill off";
+    if (runId === id) setTimeout(() => connect(id), 2000);  // auto-reconnect
+  };
+  socket.onmessage = (message) => {
+    const payload = JSON.parse(message.data);
+    if (payload.type === "snapshot") render(payload.data);
+    else if (payload.type === "event") {
+      const e = payload.data;
+      log(`${e.type}${e.step_id ? " [" + e.step_id + "]" : ""}: ${e.message}`);
+    } else if (payload.type === "error") log(payload.message, "var(--failed)");
+  };
+}
+
+async function selectRun(id) {
+  runId = id;
+  $("#new-webhook-url").innerHTML = "";
+  $("#run-picker").value = id;
+  render(await api(`/api/runs/${id}`));
+  connect(id);
+  await refreshTemplates();
+  await refreshAudit();
+}
+
+async function refreshRuns() {
+  const runs = await api("/api/runs");
+  $("#run-picker").innerHTML = runs.length
+    ? runs.map((r) => `<option value="${esc(r.run_id)}">${esc(r.run_id)} — ${esc(
+        (r.description || "untitled").slice(0, 40))}</option>`).join("")
+    : '<option value="">no runs yet</option>';
+  if (runId) $("#run-picker").value = runId;
+}
+
+// -- wiring ----------------------------------------------------------------
+
+// Answers from the clarification round, folded into the next plan request.
+let pendingClarifications = null;
+
+async function doPlan(description, clarifications) {
+  $("#btn-plan").disabled = true;
+  $("#btn-plan").textContent = "Planning…";
+  try {
+    const state = await api("/api/runs", {
+      method: "POST",
+      body: JSON.stringify({
+        description,
+        clarifications: clarifications || {},
+        parallel: $("#opt-parallel").checked,
+        smart_invalidation: $("#opt-smart").checked,
+      }),
+    });
+    log(`planned ${state.steps.length} steps in ${state.levels.length} levels`, "var(--done)");
+    $("#clarify-panel").hidden = true;
+    // Clear the box so the next task starts blank rather than silently
+    // re-planning whatever was typed before.
+    $("#desc").value = "";
+    pendingClarifications = null;
+    await refreshRuns();
+    await selectRun(state.run_id);
+  } catch (err) {
+    log("planning failed: " + err.message, "var(--failed)");
+  } finally {
+    $("#btn-plan").disabled = false;
+    $("#btn-plan").textContent = "Plan workflow";
+  }
+}
+
+function renderClarify(description, questions, useRemembered = true) {
+  const anyRemembered = questions.some(q => q.remembered !== undefined);
+  $("#clarify-panel").hidden = false;
+  $("#clarify").innerHTML = `
+    <p class="desc">Before planning, a few things would change the approach:</p>
+    ${anyRemembered ? `<div class="row" style="margin-bottom:.6rem">
+      <span class="badge ${useRemembered ? "muted" : "opt"}">
+        ${useRemembered ? "pre-filled from your previous answers" : "starting fresh"}</span>
+      <button id="btn-toggle-recall">
+        ${useRemembered ? "Start fresh instead" : "Use my previous answers"}</button>
+    </div>` : ""}
+    ${questions.map(q => {
+      const id = `clar-${q.name}`;
+      // A remembered value only pre-fills when the person has opted into it,
+      // and is always labelled so it is never mistaken for the AI's own idea.
+      const prefill = (useRemembered && q.remembered !== undefined)
+        ? q.remembered : (q.default ?? "");
+      const fromNote = (useRemembered && q.remembered !== undefined)
+        ? `<span class="why">from last time${q.remembered_from
+            ? ` (“${esc(String(q.remembered_from).slice(0, 45))}”)` : ""} — change it if wrong</span>`
+        : "";
+      let control;
+      if (q.type === "choice" && q.options.length) {
+        control = `<select id="${id}">${q.options.map(o =>
+          `<option${o === prefill ? " selected" : ""}>${esc(o)}</option>`).join("")}</select>`;
+      } else if (q.type === "boolean") {
+        control = `<select id="${id}"><option value="yes">yes</option>
+                   <option value="no" selected>no</option></select>`;
+      } else if (q.type === "multiline") {
+        control = `<textarea id="${id}" rows="2">${esc(prefill)}</textarea>`;
+      } else {
+        const kind = { number: "number", email: "email", url: "url" }[q.type] || "text";
+        control = `<input id="${id}" type="${kind}" value="${esc(prefill)}">`;
+      }
+      return `<div class="ask-field">
+        <label for="${id}">${esc(q.prompt)}${q.required ? " *" : ""}</label>
+        ${q.why ? `<span class="why">${esc(q.why)}</span>` : ""}
+        ${fromNote}
+        ${control}
+      </div>`;
+    }).join("")}
+    <div class="row" style="margin-top:.5rem">
+      <button class="primary" id="btn-clarify-go">Plan with these answers</button>
+      <button id="btn-clarify-skip">Skip — just plan it</button>
+    </div>`;
+
+  const toggle = document.getElementById("btn-toggle-recall");
+  if (toggle) toggle.addEventListener("click",
+    () => renderClarify(description, questions, !useRemembered));
+
+  const collect = () => Object.fromEntries(questions
+    .map(q => [q.name, (document.getElementById(`clar-${q.name}`) || {}).value])
+    .filter(([, v]) => v !== undefined && v !== ""));
+
+  $("#btn-clarify-go").addEventListener("click", () => doPlan(description, collect()));
+  $("#btn-clarify-skip").addEventListener("click", () => doPlan(description, {}));
+}
+
+$("#btn-plan").addEventListener("click", async () => {
+  const description = $("#desc").value.trim();
+  if (description.length < 3) { log("describe the project first", "var(--failed)"); return; }
+
+  // Ask before planning: answers here change the whole shape of the plan,
+  // so it is much cheaper to ask now than to re-plan afterwards.
+  $("#btn-plan").disabled = true;
+  $("#btn-plan").textContent = "Thinking…";
+  let clarify = { questions: [] };
+  try {
+    clarify = await api("/api/runs/clarify", {
+      method: "POST", body: JSON.stringify({ description }),
+    });
+  } catch (err) {
+    log("could not get clarifying questions: " + err.message, "var(--paused)");
+  } finally {
+    $("#btn-plan").disabled = false;
+    $("#btn-plan").textContent = "Plan workflow";
+  }
+
+  if (clarify.questions && clarify.questions.length) {
+    log(`asking ${clarify.questions.length} question(s) before planning`, "var(--accent)");
+    renderClarify(description, clarify.questions);
+  } else {
+    await doPlan(description, {});   // already clear enough
+  }
+});
+
+$("#btn-run").addEventListener("click", () =>
+  act(`/api/runs/${runId}/run`, { method: "POST", body: JSON.stringify({ fresh: false }) }));
+$("#btn-rerun").addEventListener("click", () =>
+  act(`/api/runs/${runId}/run`, { method: "POST", body: JSON.stringify({ fresh: true }) }));
+$("#btn-resume").addEventListener("click", () => act(`/api/runs/${runId}/resume`));
+$("#btn-stop").addEventListener("click", async () => {
+  const result = await act(`/api/runs/${runId}/cancel`);
+  if (result) {
+    log(result.message, "var(--paused)");
+    render(await api(`/api/runs/${runId}`));
+  }
+});
+$("#btn-new").addEventListener("click", startNewWorkflow);
+$("#btn-schedule").addEventListener("click", async () => {
+  if (!runId) { log("create a workflow before scheduling it", "var(--failed)"); return; }
+  const interval = Number($("#schedule-minutes").value);
+  if (!Number.isInteger(interval) || interval < 1) {
+    log("schedule interval must be at least one minute", "var(--failed)");
+    return;
+  }
+  try {
+    await api(`/api/runs/${runId}/schedules`, {
+      method: "POST", body: JSON.stringify({ interval_minutes: interval }),
+    });
+    log(`scheduled every ${interval} minute(s)`, "var(--done)");
+    render(await api(`/api/runs/${runId}`));
+  } catch (err) {
+    log("could not create schedule: " + err.message, "var(--failed)");
+  }
+});
+$("#btn-webhook").addEventListener("click", async () => {
+  if (!runId) { log("create a workflow before adding a webhook", "var(--failed)"); return; }
+  const name = $("#webhook-name").value.trim() || "Incoming event";
+  try {
+    const hook = await api(`/api/runs/${runId}/webhooks`, {
+      method: "POST", body: JSON.stringify({ name }),
+    });
+    $("#new-webhook-url").innerHTML = `<div class="ask-group" style="margin-top:.6rem">
+      <b>Copy this URL now</b>
+      <p class="hint">For security, it is shown only once.</p>
+      <code style="display:block;overflow-wrap:anywhere;margin:.4rem 0">${esc(hook.url)}</code>
+      <button id="copy-webhook-url">Copy URL</button>
+    </div>`;
+    $("#copy-webhook-url").addEventListener("click", async () => {
+      await navigator.clipboard.writeText(hook.url);
+      log("webhook URL copied", "var(--done)");
+    });
+    log(`created webhook “${name}”`, "var(--done)");
+    render(await api(`/api/runs/${runId}`));
+  } catch (err) {
+    log("could not create webhook: " + err.message, "var(--failed)");
+  }
+});
+$("#btn-save-template").addEventListener("click", async () => {
+  if (!runId) { log("create a workflow before saving a template", "var(--failed)"); return; }
+  const name = $("#template-name").value.trim();
+  if (!name) { log("give the template a name", "var(--failed)"); return; }
+  await api(`/api/runs/${runId}/template`, {
+    method: "POST", body: JSON.stringify({name}),
+  });
+  $("#template-name").value = "";
+  await refreshTemplates();
+  log(`saved template “${name}”`, "var(--done)");
+});
+$("#btn-add-step").addEventListener("click", openNewStepForm);
+$("#btn-refresh").addEventListener("click", async () => {
+  await refreshRuns();
+  if (runId) render(await api(`/api/runs/${runId}`));
+});
+$("#run-picker").addEventListener("change", (e) => e.target.value && selectRun(e.target.value));
+document.querySelectorAll("[data-fmt]").forEach((b) =>
+  b.addEventListener("click", async () => {
+    if (!runId) return;
+    try {
+      const response = await fetch(`/api/runs/${runId}/export?format=${b.dataset.fmt}`, {
+        headers: apiKey ? { "Authorization": `Bearer ${apiKey}` } : {},
+      });
+      if (!response.ok) throw new Error((await response.json()).detail || response.statusText);
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${runId}.${b.dataset.fmt}`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      log("export failed: " + err.message, "var(--failed)");
+    }
+  }));
+
+(async function init() {
+  try {
+    const health = await api("/api/health");
+    $("#llm-mode").textContent = "llm: " + health.config.llm_mode;
+    await refreshSetup();          // guide the user before they hit a wall
+    await refreshRuns();
+    await refreshTemplates();
+    await refreshAudit();
+    const first = $("#run-picker").value;
+    if (first) await selectRun(first);
+    log("dashboard ready");
+  } catch (err) {
+    log("startup failed: " + err.message, "var(--failed)");
+  }
+})();
+</script>
+</body>
+</html>
