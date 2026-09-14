@@ -28,6 +28,6 @@
     "pack:check": "npm pack --dry-run"
   },
   "engines": {"node": ">=18"},
-  "os": ["win32", "darwin", "linux"],
+  "os": ["win32"],
   "keywords": ["ai", "agents", "workflow", "orchestrator", "mcp", "local-first"]
 }

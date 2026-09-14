@@ -10,6 +10,9 @@ user account:
 npx adaptive-ai-orchestrator
 ```
 
+Version 1.0.0 ships the verified Windows runtime. The release workflow builds
+Windows, macOS and Linux binaries before publishing subsequent multiplatform releases.
+
 For a permanent command:
 
 ```bash

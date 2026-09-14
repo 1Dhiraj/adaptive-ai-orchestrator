@@ -49,6 +49,7 @@ jobs:
         with: {pattern: runtime-*, path: vendor, merge-multiple: true}
       - uses: actions/setup-node@v4
         with: {node-version: "22", registry-url: "https://registry.npmjs.org"}
+      - run: npm pkg set 'os[0]=win32' 'os[1]=darwin' 'os[2]=linux'
       - run: npm test
         env: {ORCHESTRATOR_NO_OPEN: "1"}
       - run: npm pack
