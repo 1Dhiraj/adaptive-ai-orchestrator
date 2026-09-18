@@ -1,0 +1,1025 @@
+{
+  "meta": {
+    "model": "qwen2.5:7b",
+    "repeats": 3,
+    "theta": 0.9,
+    "sweep": [
+      0.8,
+      0.85,
+      0.95
+    ],
+    "started": "2026-09-18 06:34:40"
+  },
+  "repeats_completed": 3,
+  "changes_per_repeat": {
+    "0": 50,
+    "1": 50,
+    "2": 50
+  },
+  "systems": {
+    "B1": {
+      "steps": {
+        "mean": 5.0,
+        "sd": 0.0
+      },
+      "tokens": {
+        "mean": 2364.82,
+        "sd": 32.74402540922547
+      },
+      "check": {
+        "mean": 0.0,
+        "sd": 0.0
+      },
+      "total": {
+        "mean": 2364.82,
+        "sd": 32.74402540922547
+      },
+      "calls": {
+        "mean": 5.0,
+        "sd": 0.0
+      },
+      "seconds": {
+        "mean": 9.01287233,
+        "sd": 0.1718961485890633
+      },
+      "missed": {
+        "mean": 0.0,
+        "sd": 0.0
+      },
+      "unnec": {
+        "mean": 51.6,
+        "sd": 0.0
+      },
+      "stale": {
+        "mean": 1.1019283746556474,
+        "sd": 0.4771489828013436
+      },
+      "cutoffs": {
+        "mean": 0.0,
+        "sd": 0.0
+      }
+    },
+    "B2": {
+      "steps": {
+        "mean": 2.4,
+        "sd": 0.0
+      },
+      "tokens": {
+        "mean": 1362.6000000000001,
+        "sd": 4.593952546555117
+      },
+      "check": {
+        "mean": 0.0,
+        "sd": 0.0
+      },
+      "total": {
+        "mean": 1362.6000000000001,
+        "sd": 4.593952546555117
+      },
+      "calls": {
+        "mean": 2.4,
+        "sd": 0.0
+      },
+      "seconds": {
+        "mean": 4.469732318666666,
+        "sd": 0.09119834680761338
+      },
+      "missed": {
+        "mean": 9.090909090909092,
+        "sd": 0.0
+      },
+      "unnec": {
+        "mean": 8.333333333333334,
+        "sd": 0.0
+      },
+      "stale": {
+        "mean": 17.630853994490362,
+        "sd": 0.47714898280134355
+      },
+      "cutoffs": {
+        "mean": 0.0,
+        "sd": 0.0
+      }
+    },
+    "B3": {
+      "steps": {
+        "mean": 2.4,
+        "sd": 0.0
+      },
+      "tokens": {
+        "mean": 1362.6000000000001,
+        "sd": 4.593952546555117
+      },
+      "check": {
+        "mean": 0.0,
+        "sd": 0.0
+      },
+      "total": {
+        "mean": 1362.6000000000001,
+        "sd": 4.593952546555117
+      },
+      "calls": {
+        "mean": 2.4,
+        "sd": 0.0
+      },
+      "seconds": {
+        "mean": 4.469732318666666,
+        "sd": 0.09119834680761338
+      },
+      "missed": {
+        "mean": 9.090909090909092,
+        "sd": 0.0
+      },
+      "unnec": {
+        "mean": 8.333333333333334,
+        "sd": 0.0
+      },
+      "stale": {
+        "mean": 17.630853994490362,
+        "sd": 0.47714898280134355
+      },
+      "cutoffs": {
+        "mean": 0.006666666666666667,
+        "sd": 0.011547005383792516
+      }
+    },
+    "P1": {
+      "steps": {
+        "mean": 3.793333333333333,
+        "sd": 0.041633319989322695
+      },
+      "tokens": {
+        "mean": 1854.8866666666665,
+        "sd": 53.64717824204117
+      },
+      "check": {
+        "mean": 0.0,
+        "sd": 0.0
+      },
+      "total": {
+        "mean": 1854.8866666666665,
+        "sd": 53.64717824204117
+      },
+      "calls": {
+        "mean": 3.793333333333333,
+        "sd": 0.041633319989322695
+      },
+      "seconds": {
+        "mean": 7.080043802666666,
+        "sd": 0.2963670132923356
+      },
+      "missed": {
+        "mean": 7.713498622589531,
+        "sd": 0.9542979656026866
+      },
+      "unnec": {
+        "mean": 41.11886234005028,
+        "sd": 0.9977708685770341
+      },
+      "stale": {
+        "mean": 1.3774104683195594,
+        "sd": 0.47714898280134366
+      },
+      "cutoffs": {
+        "mean": 0.006666666666666667,
+        "sd": 0.011547005383792516
+      }
+    },
+    "P2": {
+      "steps": {
+        "mean": 2.393333333333333,
+        "sd": 0.011547005383792526
+      },
+      "tokens": {
+        "mean": 1359.26,
+        "sd": 4.7340891415350566
+      },
+      "check": {
+        "mean": 85.86,
+        "sd": 24.279530473219616
+      },
+      "total": {
+        "mean": 1445.12,
+        "sd": 20.76835092153442
+      },
+      "calls": {
+        "mean": 2.5866666666666664,
+        "sd": 0.06429100507328643
+      },
+      "seconds": {
+        "mean": 4.518043795333333,
+        "sd": 0.12038656674244079
+      },
+      "missed": {
+        "mean": 9.366391184573004,
+        "sd": 0.47714898280134355
+      },
+      "unnec": {
+        "mean": 8.356676003734828,
+        "sd": 0.04043069111972155
+      },
+      "stale": {
+        "mean": 18.457300275482094,
+        "sd": 0.47714898280134355
+      },
+      "cutoffs": {
+        "mean": 0.06666666666666667,
+        "sd": 0.04618802153517006
+      }
+    },
+    "P3": {
+      "steps": {
+        "mean": 3.793333333333333,
+        "sd": 0.041633319989322695
+      },
+      "tokens": {
+        "mean": 1855.8533333333332,
+        "sd": 54.05772593564528
+      },
+      "check": {
+        "mean": 162.15333333333334,
+        "sd": 46.69100270216237
+      },
+      "total": {
+        "mean": 2018.006666666667,
+        "sd": 40.13780927421589
+      },
+      "calls": {
+        "mean": 4.14,
+        "sd": 0.10392304845413299
+      },
+      "seconds": {
+        "mean": 7.179518289333333,
+        "sd": 0.2857373218769448
+      },
+      "missed": {
+        "mean": 7.713498622589531,
+        "sd": 0.9542979656026866
+      },
+      "unnec": {
+        "mean": 41.11886234005028,
+        "sd": 0.9977708685770341
+      },
+      "stale": {
+        "mean": 1.928374655647383,
+        "sd": 0.47714898280134366
+      },
+      "cutoffs": {
+        "mean": 0.06666666666666667,
+        "sd": 0.08326663997864531
+      }
+    },
+    "P4": {
+      "steps": {
+        "mean": 4.073333333333333,
+        "sd": 0.041633319989322765
+      },
+      "tokens": {
+        "mean": 2024.3400000000001,
+        "sd": 42.46040979547883
+      },
+      "check": {
+        "mean": 171.16666666666666,
+        "sd": 34.14747037971237
+      },
+      "total": {
+        "mean": 2195.5066666666667,
+        "sd": 29.99949555131453
+      },
+      "calls": {
+        "mean": 4.44,
+        "sd": 0.08717797887081365
+      },
+      "seconds": {
+        "mean": 7.712906733333334,
+        "sd": 0.2621484330146289
+      },
+      "missed": {
+        "mean": 0.0,
+        "sd": 0.0
+      },
+      "unnec": {
+        "mean": 40.58507816442364,
+        "sd": 0.6046265588185944
+      },
+      "stale": {
+        "mean": 1.928374655647383,
+        "sd": 0.47714898280134366
+      },
+      "cutoffs": {
+        "mean": 0.08,
+        "sd": 0.06928203230275509
+      }
+    }
+  },
+  "savings_vs_B1": {
+    "B1": {
+      "tokens_saved_pct": {
+        "mean": 0.0,
+        "sd": 0.0
+      },
+      "steps_saved_pct": {
+        "mean": 0.0,
+        "sd": 0.0
+      }
+    },
+    "B2": {
+      "tokens_saved_pct": {
+        "mean": 42.37196699296464,
+        "sd": 0.9276370719109249
+      },
+      "steps_saved_pct": {
+        "mean": 52.0,
+        "sd": 0.0
+      }
+    },
+    "B3": {
+      "tokens_saved_pct": {
+        "mean": 42.37196699296464,
+        "sd": 0.9276370719109249
+      },
+      "steps_saved_pct": {
+        "mean": 52.0,
+        "sd": 0.0
+      }
+    },
+    "P1": {
+      "tokens_saved_pct": {
+        "mean": 21.573851849287006,
+        "sd": 1.2311016090893232
+      },
+      "steps_saved_pct": {
+        "mean": 24.133333333333336,
+        "sd": 0.8326663997864536
+      }
+    },
+    "P2": {
+      "tokens_saved_pct": {
+        "mean": 38.87925086852622,
+        "sd": 1.4738855506036612
+      },
+      "steps_saved_pct": {
+        "mean": 52.13333333333333,
+        "sd": 0.2309401076758536
+      }
+    },
+    "P3": {
+      "tokens_saved_pct": {
+        "mean": 14.66526541627119,
+        "sd": 1.2352888835618736
+      },
+      "steps_saved_pct": {
+        "mean": 24.133333333333336,
+        "sd": 0.8326663997864536
+      }
+    },
+    "P4": {
+      "tokens_saved_pct": {
+        "mean": 7.154590433210473,
+        "sd": 1.1683372805162457
+      },
+      "steps_saved_pct": {
+        "mean": 18.53333333333333,
+        "sd": 0.8326663997864553
+      }
+    }
+  },
+  "by_category": {
+    "B1": {
+      "root": {
+        "steps": 5.0,
+        "missed_pct": 0.0,
+        "unnec_pct": 0.0,
+        "tokens": 2361.0
+      },
+      "mid": {
+        "steps": 5.0,
+        "missed_pct": 0.0,
+        "unnec_pct": 60.0,
+        "tokens": 2332.9333333333334
+      },
+      "leaf": {
+        "steps": 5.0,
+        "missed_pct": 0.0,
+        "unnec_pct": 80.0,
+        "tokens": 2383.6
+      },
+      "cosmetic": {
+        "steps": 5.0,
+        "missed_pct": 0.0,
+        "unnec_pct": 80.0,
+        "tokens": 2395.7
+      },
+      "hidden": {
+        "steps": 5.0,
+        "missed_pct": 0.0,
+        "unnec_pct": 38.0,
+        "tokens": 2350.866666666667
+      }
+    },
+    "B2": {
+      "root": {
+        "steps": 5.0,
+        "missed_pct": 0.0,
+        "unnec_pct": 0.0,
+        "tokens": 2361.0
+      },
+      "mid": {
+        "steps": 2.0,
+        "missed_pct": 0.0,
+        "unnec_pct": 0.0,
+        "tokens": 1216.2
+      },
+      "leaf": {
+        "steps": 1.0,
+        "missed_pct": 0.0,
+        "unnec_pct": 0.0,
+        "tokens": 799.2666666666667
+      },
+      "cosmetic": {
+        "steps": 2.0,
+        "missed_pct": 0.0,
+        "unnec_pct": 50.0,
+        "tokens": 1232.4666666666667
+      },
+      "hidden": {
+        "steps": 2.0,
+        "missed_pct": 35.483870967741936,
+        "unnec_pct": 0.0,
+        "tokens": 1204.0666666666666
+      }
+    },
+    "B3": {
+      "root": {
+        "steps": 5.0,
+        "missed_pct": 0.0,
+        "unnec_pct": 0.0,
+        "tokens": 2361.0
+      },
+      "mid": {
+        "steps": 2.0,
+        "missed_pct": 0.0,
+        "unnec_pct": 0.0,
+        "tokens": 1216.2
+      },
+      "leaf": {
+        "steps": 1.0,
+        "missed_pct": 0.0,
+        "unnec_pct": 0.0,
+        "tokens": 799.2666666666667
+      },
+      "cosmetic": {
+        "steps": 2.0,
+        "missed_pct": 0.0,
+        "unnec_pct": 50.0,
+        "tokens": 1232.4666666666667
+      },
+      "hidden": {
+        "steps": 2.0,
+        "missed_pct": 35.483870967741936,
+        "unnec_pct": 0.0,
+        "tokens": 1204.0666666666666
+      }
+    },
+    "P1": {
+      "root": {
+        "steps": 5.0,
+        "missed_pct": 0.0,
+        "unnec_pct": 0.0,
+        "tokens": 2361.0
+      },
+      "mid": {
+        "steps": 4.4,
+        "missed_pct": 10.0,
+        "unnec_pct": 59.09090909090909,
+        "tokens": 2114.233333333333
+      },
+      "leaf": {
+        "steps": 2.4,
+        "missed_pct": 23.333333333333332,
+        "unnec_pct": 68.05555555555556,
+        "tokens": 1369.7333333333333
+      },
+      "cosmetic": {
+        "steps": 2.3333333333333335,
+        "missed_pct": 50.0,
+        "unnec_pct": 78.57142857142857,
+        "tokens": 1159.9666666666667
+      },
+      "hidden": {
+        "steps": 4.833333333333333,
+        "missed_pct": 0.0,
+        "unnec_pct": 35.86206896551724,
+        "tokens": 2269.5
+      }
+    },
+    "P2": {
+      "root": {
+        "steps": 4.966666666666667,
+        "missed_pct": 0.6666666666666666,
+        "unnec_pct": 0.0,
+        "tokens": 2463.0
+      },
+      "mid": {
+        "steps": 2.0,
+        "missed_pct": 0.0,
+        "unnec_pct": 0.0,
+        "tokens": 1324.7333333333333
+      },
+      "leaf": {
+        "steps": 1.0,
+        "missed_pct": 0.0,
+        "unnec_pct": 0.0,
+        "tokens": 829.1666666666666
+      },
+      "cosmetic": {
+        "steps": 2.0,
+        "missed_pct": 0.0,
+        "unnec_pct": 50.0,
+        "tokens": 1307.6666666666667
+      },
+      "hidden": {
+        "steps": 2.0,
+        "missed_pct": 35.483870967741936,
+        "unnec_pct": 0.0,
+        "tokens": 1301.0333333333333
+      }
+    },
+    "P3": {
+      "root": {
+        "steps": 5.0,
+        "missed_pct": 0.0,
+        "unnec_pct": 0.0,
+        "tokens": 2484.5
+      },
+      "mid": {
+        "steps": 4.4,
+        "missed_pct": 10.0,
+        "unnec_pct": 59.09090909090909,
+        "tokens": 2347.5
+      },
+      "leaf": {
+        "steps": 2.4,
+        "missed_pct": 23.333333333333332,
+        "unnec_pct": 68.05555555555556,
+        "tokens": 1555.5333333333333
+      },
+      "cosmetic": {
+        "steps": 2.3333333333333335,
+        "missed_pct": 50.0,
+        "unnec_pct": 78.57142857142857,
+        "tokens": 1243.8666666666666
+      },
+      "hidden": {
+        "steps": 4.833333333333333,
+        "missed_pct": 0.0,
+        "unnec_pct": 35.86206896551724,
+        "tokens": 2458.633333333333
+      }
+    },
+    "P4": {
+      "root": {
+        "steps": 5.0,
+        "missed_pct": 0.0,
+        "unnec_pct": 0.0,
+        "tokens": 2484.5
+      },
+      "mid": {
+        "steps": 4.6,
+        "missed_pct": 0.0,
+        "unnec_pct": 56.52173913043478,
+        "tokens": 2455.4666666666667
+      },
+      "leaf": {
+        "steps": 2.6333333333333333,
+        "missed_pct": 0.0,
+        "unnec_pct": 62.0253164556962,
+        "tokens": 1716.5333333333333
+      },
+      "cosmetic": {
+        "steps": 3.3,
+        "missed_pct": 0.0,
+        "unnec_pct": 69.6969696969697,
+        "tokens": 1862.4
+      },
+      "hidden": {
+        "steps": 4.833333333333333,
+        "missed_pct": 0.0,
+        "unnec_pct": 35.86206896551724,
+        "tokens": 2458.633333333333
+      }
+    }
+  },
+  "b3_hidden_changes_with_miss": [
+    30,
+    30
+  ],
+  "b3_nonhidden_missed_steps": 0,
+  "p3_missed_changes_without_rerun": [
+    24,
+    25
+  ],
+  "p3_missed_categories": [
+    "cosmetic",
+    "leaf",
+    "mid"
+  ],
+  "must_size_by_category": {
+    "root": 5.0,
+    "mid": 2.0,
+    "leaf": 1.0,
+    "cosmetic": 1.0,
+    "hidden": 3.1
+  },
+  "theta_sweep": {
+    "0.80": {
+      "tokens_saved_pct": {
+        "mean": 5.869762895028722,
+        "sd": 0.629163507907863
+      },
+      "missed_pct": {
+        "mean": 7.713498622589531,
+        "sd": 0.9542979656026866
+      },
+      "judge_calls": {
+        "mean": 0.7999999999999999,
+        "sd": 0.052915026221291794
+      },
+      "cutoffs": {
+        "mean": 0.12,
+        "sd": 0.06
+      }
+    },
+    "0.85": {
+      "tokens_saved_pct": {
+        "mean": 9.198822604993799,
+        "sd": 0.6753338901041119
+      },
+      "missed_pct": {
+        "mean": 7.713498622589531,
+        "sd": 0.9542979656026866
+      },
+      "judge_calls": {
+        "mean": 0.6333333333333333,
+        "sd": 0.0461880215351701
+      },
+      "cutoffs": {
+        "mean": 0.10666666666666667,
+        "sd": 0.07023769168568492
+      }
+    },
+    "0.90": {
+      "tokens_saved_pct": {
+        "mean": 14.66526541627119,
+        "sd": 1.2352888835618736
+      },
+      "missed_pct": {
+        "mean": 7.713498622589531,
+        "sd": 0.9542979656026866
+      },
+      "judge_calls": {
+        "mean": 0.3466666666666667,
+        "sd": 0.10066445913694333
+      },
+      "cutoffs": {
+        "mean": 0.06666666666666667,
+        "sd": 0.08326663997864531
+      }
+    },
+    "0.95": {
+      "tokens_saved_pct": {
+        "mean": 19.48973935152791,
+        "sd": 0.717791233854034
+      },
+      "missed_pct": {
+        "mean": 7.713498622589531,
+        "sd": 0.9542979656026866
+      },
+      "judge_calls": {
+        "mean": 0.10666666666666667,
+        "sd": 0.06110100926607787
+      },
+      "cutoffs": {
+        "mean": 0.04666666666666666,
+        "sd": 0.06429100507328636
+      }
+    }
+  },
+  "translation": {
+    "Data analysis": {
+      "n": 10,
+      "key_pct": 100.0,
+      "value_pct": 100.0,
+      "both_pct": 100.0,
+      "errors": []
+    },
+    "DevOps": {
+      "n": 10,
+      "key_pct": 100.0,
+      "value_pct": 60.0,
+      "both_pct": 60.0,
+      "errors": [
+        {
+          "workflow": "w09",
+          "domain": "DevOps",
+          "change": "w09-leaf",
+          "category": "leaf",
+          "pred_key": "pr.template",
+          "pred_value": "summary plus a checklist",
+          "key": "pr.template",
+          "value": "summary plus checklist",
+          "key_ok": true,
+          "value_ok": false
+        },
+        {
+          "workflow": "w09",
+          "domain": "DevOps",
+          "change": "w09-cosm",
+          "category": "cosmetic",
+          "pred_key": "config.comments",
+          "pred_value": "brief",
+          "key": "config.comments",
+          "value": "brief comments",
+          "key_ok": true,
+          "value_ok": false
+        },
+        {
+          "workflow": "w10",
+          "domain": "DevOps",
+          "change": "w10-mid",
+          "category": "mid",
+          "pred_key": "replicas",
+          "pred_value": "5",
+          "key": "replicas",
+          "value": "5 replicas",
+          "key_ok": true,
+          "value_ok": false
+        },
+        {
+          "workflow": "w10",
+          "domain": "DevOps",
+          "change": "w10-cosm",
+          "category": "cosmetic",
+          "pred_key": "yaml.comments",
+          "pred_value": "yes",
+          "key": "yaml.comments",
+          "value": "short comments",
+          "key_ok": true,
+          "value_ok": false
+        }
+      ]
+    },
+    "Document processing": {
+      "n": 10,
+      "key_pct": 100.0,
+      "value_pct": 80.0,
+      "both_pct": 80.0,
+      "errors": [
+        {
+          "workflow": "w07",
+          "domain": "Document processing",
+          "change": "w07-cosm",
+          "category": "cosmetic",
+          "pred_key": "risk.labels",
+          "pred_value": "L, M and H",
+          "key": "risk.labels",
+          "value": "L, M, H",
+          "key_ok": true,
+          "value_ok": false
+        },
+        {
+          "workflow": "w08",
+          "domain": "Document processing",
+          "change": "w08-cosm",
+          "category": "cosmetic",
+          "pred_key": "checklist.style",
+          "pred_value": "checkboxes",
+          "key": "checklist.style",
+          "value": "checkbox list",
+          "key_ok": true,
+          "value_ok": false
+        }
+      ]
+    },
+    "Software development": {
+      "n": 10,
+      "key_pct": 100.0,
+      "value_pct": 90.0,
+      "both_pct": 90.0,
+      "errors": [
+        {
+          "workflow": "w02",
+          "domain": "Software development",
+          "change": "w02-mid",
+          "category": "mid",
+          "pred_key": "alert.threshold",
+          "pred_value": "80 km/h",
+          "key": "alert.threshold",
+          "value": "wind speed above 80 km/h",
+          "key_ok": true,
+          "value_ok": false
+        }
+      ]
+    },
+    "Web research and messaging": {
+      "n": 10,
+      "key_pct": 100.0,
+      "value_pct": 90.0,
+      "both_pct": 90.0,
+      "errors": [
+        {
+          "workflow": "w05",
+          "domain": "Web research and messaging",
+          "change": "w05-cosm",
+          "category": "cosmetic",
+          "pred_key": "social.emoji",
+          "pred_value": "yes",
+          "key": "social.emoji",
+          "value": "one emoji per post",
+          "key_ok": true,
+          "value_ok": false
+        }
+      ]
+    },
+    "All": {
+      "n": 50,
+      "key_pct": 100.0,
+      "value_pct": 84.0,
+      "both_pct": 84.0,
+      "errors": [
+        {
+          "workflow": "w02",
+          "domain": "Software development",
+          "change": "w02-mid",
+          "category": "mid",
+          "pred_key": "alert.threshold",
+          "pred_value": "80 km/h",
+          "key": "alert.threshold",
+          "value": "wind speed above 80 km/h",
+          "key_ok": true,
+          "value_ok": false
+        },
+        {
+          "workflow": "w05",
+          "domain": "Web research and messaging",
+          "change": "w05-cosm",
+          "category": "cosmetic",
+          "pred_key": "social.emoji",
+          "pred_value": "yes",
+          "key": "social.emoji",
+          "value": "one emoji per post",
+          "key_ok": true,
+          "value_ok": false
+        },
+        {
+          "workflow": "w07",
+          "domain": "Document processing",
+          "change": "w07-cosm",
+          "category": "cosmetic",
+          "pred_key": "risk.labels",
+          "pred_value": "L, M and H",
+          "key": "risk.labels",
+          "value": "L, M, H",
+          "key_ok": true,
+          "value_ok": false
+        },
+        {
+          "workflow": "w08",
+          "domain": "Document processing",
+          "change": "w08-cosm",
+          "category": "cosmetic",
+          "pred_key": "checklist.style",
+          "pred_value": "checkboxes",
+          "key": "checklist.style",
+          "value": "checkbox list",
+          "key_ok": true,
+          "value_ok": false
+        },
+        {
+          "workflow": "w09",
+          "domain": "DevOps",
+          "change": "w09-leaf",
+          "category": "leaf",
+          "pred_key": "pr.template",
+          "pred_value": "summary plus a checklist",
+          "key": "pr.template",
+          "value": "summary plus checklist",
+          "key_ok": true,
+          "value_ok": false
+        },
+        {
+          "workflow": "w09",
+          "domain": "DevOps",
+          "change": "w09-cosm",
+          "category": "cosmetic",
+          "pred_key": "config.comments",
+          "pred_value": "brief",
+          "key": "config.comments",
+          "value": "brief comments",
+          "key_ok": true,
+          "value_ok": false
+        },
+        {
+          "workflow": "w10",
+          "domain": "DevOps",
+          "change": "w10-mid",
+          "category": "mid",
+          "pred_key": "replicas",
+          "pred_value": "5",
+          "key": "replicas",
+          "value": "5 replicas",
+          "key_ok": true,
+          "value_ok": false
+        },
+        {
+          "workflow": "w10",
+          "domain": "DevOps",
+          "change": "w10-cosm",
+          "category": "cosmetic",
+          "pred_key": "yaml.comments",
+          "pred_value": "yes",
+          "key": "yaml.comments",
+          "value": "short comments",
+          "key_ok": true,
+          "value_ok": false
+        }
+      ]
+    }
+  },
+  "plan_checker": {
+    "cycle": [
+      10,
+      10
+    ],
+    "missing dependency": [
+      10,
+      10
+    ],
+    "type mismatch": [
+      10,
+      10
+    ],
+    "unknown fact owner": [
+      10,
+      10
+    ],
+    "token budget": [
+      10,
+      10
+    ]
+  },
+  "suite": {
+    "Software development": {
+      "workflows": 2,
+      "avg_steps": 5.0,
+      "changes": 10,
+      "avg_facts": 6.5,
+      "examples": [
+        "Task manager web application",
+        "Weather alert microservice"
+      ]
+    },
+    "Data analysis": {
+      "workflows": 2,
+      "avg_steps": 5.0,
+      "changes": 10,
+      "avg_facts": 5.0,
+      "examples": [
+        "Quarterly sales report",
+        "Customer churn analysis"
+      ]
+    },
+    "Web research and messaging": {
+      "workflows": 2,
+      "avg_steps": 5.0,
+      "changes": 10,
+      "avg_facts": 6.0,
+      "examples": [
+        "Product launch announcement",
+        "Research digest on heat pumps"
+      ]
+    },
+    "Document processing": {
+      "workflows": 2,
+      "avg_steps": 5.0,
+      "changes": 10,
+      "avg_facts": 5.5,
+      "examples": [
+        "Contract obligation extraction",
+        "Remote work policy summary"
+      ]
+    },
+    "DevOps": {
+      "workflows": 2,
+      "avg_steps": 5.0,
+      "changes": 10,
+      "avg_facts": 5.5,
+      "examples": [
+        "CI pipeline for a Python library",
+        "Kubernetes deployment for an orders API"
+      ]
+    }
+  },
+  "unique_model_calls": 1342,
+  "total_model_seconds": 2164.9631556
+}

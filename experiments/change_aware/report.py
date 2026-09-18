@@ -105,6 +105,12 @@ def main():
                 "tokens": mean(r["tokens"] + r["check_tokens"] for r in rs),
             }
     summary["by_category"] = by_cat
+    b3_hidden = [r for r in base if r["system"] == "B3" and r["category"] == "hidden"]
+    summary["b3_hidden_changes_with_miss"] = [sum(1 for r in b3_hidden if r["missed"] > 0), len(b3_hidden)]
+    summary["b3_nonhidden_missed_steps"] = sum(r["missed"] for r in base if r["system"] == "B3" and r["category"] != "hidden")
+    p3m = [r for r in base if r["system"] == "P3" and r["missed"] > 0]
+    summary["p3_missed_changes_without_rerun"] = [sum(1 for r in p3m if not r["rerun"]), len(p3m)]
+    summary["p3_missed_categories"] = sorted({r["category"] for r in p3m})
     summary["must_size_by_category"] = {c: mean(r["must_count"] for r in base if r["system"] == "B1" and r["category"] == c) for c in CATS}
 
     # ---------------------------------------------------------------- threshold sweep (P3)

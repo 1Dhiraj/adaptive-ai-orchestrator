@@ -1,0 +1,22 @@
+{
+  "cycle": [
+    10,
+    10
+  ],
+  "missing dependency": [
+    10,
+    10
+  ],
+  "type mismatch": [
+    10,
+    10
+  ],
+  "unknown fact owner": [
+    10,
+    10
+  ],
+  "token budget": [
+    10,
+    10
+  ]
+}
