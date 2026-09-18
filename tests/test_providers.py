@@ -197,6 +197,20 @@ class TestOllamaProvider:
 
 
 class TestProviderSelection:
+    @pytest.fixture(autouse=True)
+    def _no_ambient_stub_override(self, monkeypatch):
+        """Tests in this class construct Settings() straight from the
+
+        environment to check provider precedence. ORCHESTRATOR_STUB_LLM is
+        commonly exported ambiently (it is set for the whole job in CI, and
+        developers often leave it on locally), and force_stub_llm outranks
+        everything else in resolve_provider() -- so a stray copy in the
+        environment silently makes every precedence assertion here observe
+        "stub" no matter what it actually set up. Clear it so each test
+        reflects only the environment it constructs for itself.
+        """
+        monkeypatch.delenv("ORCHESTRATOR_STUB_LLM", raising=False)
+
     def test_build_provider_stub(self):
         from orchestrator.llm import StubProvider
 
