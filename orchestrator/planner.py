@@ -62,7 +62,7 @@ Respond with ONLY valid JSON, no markdown fences and no commentary:
       "accepts": ["code", "json", "text"],
       "assumes": ["requirement_fact_key"],
       "depends_on": ["id_of_prerequisite", ...],
-      "tool": "EXACT name from the tool list supplied below, or null",
+      "tool": "EXACT installed tool name, a missing capability name, or null for work that needs no tool",
       "condition": {"source":"earlier_task_id or trigger.field", "operator":"contains | not_contains | equals | not_equals | exists | truthy", "value":"comparison value"},
       "inputs": [
         {
@@ -135,7 +135,13 @@ TASKS:
 - The graph must be acyclic.
 - Put tasks that could run at the same time at the same dependency depth --
   do NOT chain everything into a single line unless it truly is sequential.
-- "tool" must name something declared in requirements.
+- "tool" must name something declared in requirements. If the capability is
+  missing, keep its name and declare a non-optional tool requirement. The
+  system can discover an integration; never replace actual execution with prose.
+- Prefer an installed API, then a browser tool, then desktop automation. A
+  browser or desktop action may need account sign-in and explicit permission.
+- Sending email is real work: preserve the supplied recipient, draft the
+  content yourself, and require approval for the exact message before sending.
 - Descriptions state the deliverable, not the process.
 - Use condition only for a real branch. Its source must be a dependency's id
   or trigger.field for webhook data. Omit condition for normal tasks.
@@ -404,8 +410,9 @@ class TaskPlanner:
             catalogue = "\n".join(
                 f"- {t['name']}: {t['description']}" for t in tools.describe())
             if catalogue:
-                prompt += ("\n\nThe ONLY tools that exist are these. Use a name from "
-                           f"this list verbatim, or null. Never invent a tool name:\n{catalogue}")
+                prompt += ("\n\nInstalled tools (use their exact names). If none can do the work, "
+                           "declare a missing tool requirement and keep that capability on its step; "
+                           f"do not pretend it was executed:\n{catalogue}")
 
         from .llm import provider_for_role
         response = provider_for_role(self.llm, "planner").generate(
@@ -520,6 +527,8 @@ class TaskPlanner:
         canonical = canonical_tool_name(name)
         if not canonical:
             return None, None
+        if canonical in {"email", "gmail"} and available and "adaptive_email" in available:
+            return "adaptive_email", "email uses reviewed API/browser delivery"
         if available is None or canonical in available:
             return canonical, None
 
@@ -536,8 +545,8 @@ class TaskPlanner:
             best = sorted(candidates, key=lambda r: (-len(set(r) & set(canonical)), len(r)))[0]
             return best, f"tool '{canonical}' does not exist; using '{best}' instead"
 
-        return None, (f"tool '{canonical}' does not exist and nothing similar is "
-                      "registered; the step will run without a tool")
+        return canonical, (f"tool '{canonical}' does not exist; discover and connect "
+                           "the missing capability before execution")
 
     @staticmethod
     def build_graph(tasks: List[Dict[str, Any]],

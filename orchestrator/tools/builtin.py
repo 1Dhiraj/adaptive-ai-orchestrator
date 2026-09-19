@@ -429,7 +429,7 @@ class EmailTool(Tool):
     irreversible = True  # an email cannot be unsent
 
     def is_live(self) -> bool:
-        return bool(settings.sendgrid_api_key and os.environ.get("EMAIL_TO"))
+        return bool(settings.sendgrid_api_key and os.environ.get("EMAIL_FROM"))
 
     def _run(self, task: str, context: Optional[dict] = None) -> str:
         directive = _directive(task)
@@ -451,7 +451,7 @@ class EmailTool(Tool):
                 "personalizations": [{"to": [{"email": recipient}]}],
                 "from": {"email": os.environ.get("EMAIL_FROM", recipient)},
                 "subject": subject,
-                "content": [{"type": "text/plain", "value": task[:8000]}],
+                "content": [{"type": "text/plain", "value": task.split("TOOL_DIRECTIVE:", 1)[0].strip()[:8000]}],
             },
         )
         return f"[email] sent '{subject}' to {recipient}"

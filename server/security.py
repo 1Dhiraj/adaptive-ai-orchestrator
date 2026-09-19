@@ -73,6 +73,8 @@ class SecurityPolicy:
 
     @staticmethod
     def required_role(method: str, path: str) -> str:
+        if path.startswith("/api/capabilities/") and path.endswith("/connect"):
+            return "admin"
         if path.startswith("/api/audit"):
             return "admin"
         if method.upper() in {"GET", "HEAD", "OPTIONS"}:

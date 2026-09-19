@@ -416,6 +416,10 @@ class Workflow:
             if step_id not in self.graph:
                 continue
             step = self.graph.get(step_id)
+            # Email delivery setup is a choice made after the draft is ready,
+            # not an API-key prerequisite that prevents writing the message.
+            if step.requires_tool == "adaptive_email":
+                continue
             existing = {i.name for i in step.inputs}
             for request in requests:
                 if request.name in existing:
@@ -1159,14 +1163,15 @@ class Workflow:
         sees the gate until the day they add credentials. Use ``"all"`` to
         rehearse the approval flow without credentials configured.
         """
-        if self.action_approval == "never":
-            return True
         tool = self.tools.get(tool_name)
+        mandatory = bool(tool and getattr(tool, "require_approval", False))
+        if self.action_approval == "never" and not mandatory:
+            return True
         # Asked per call, not per tool: the same HTTP connection is harmless
         # for a GET and unundoable for a DELETE.
         if tool is None or not tool.is_irreversible(payload, {"step_id": step.id}):
             return True
-        if self.action_approval == "live" and not tool.is_live():
+        if self.action_approval == "live" and not tool.is_live() and not mandatory:
             return True
         return step.id in self._approved_actions
 
@@ -1175,7 +1180,8 @@ class Workflow:
         """Park an unapproved irreversible action and pause the step."""
         tool_name = outcome.deferred_tool
         tool = self.tools.get(tool_name)
-        preview = tool.preview(outcome.output, {"step_id": step.id, "step_name": step.name}) \
+        preview = tool.preview(outcome.output, {"step_id": step.id, "step_name": step.name,
+                                               "inputs": {**self.all_input_values(), **step.input_values()}}) \
             if tool is not None else f"{tool_name}: (no preview available)"
 
         action = PendingAction(

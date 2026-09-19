@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import re
 import secrets
 import threading
 import base64
@@ -37,10 +38,41 @@ from server.observability import (CONTENT_TYPE_LATEST, HTTP_DURATION, HTTP_REQUE
                                   configure_tracing, metrics_payload)
 from orchestrator.tenancy import tenant_scope
 from orchestrator.tenancy import current_tenant
+from orchestrator.acquisition import AcquisitionError, CapabilityAcquirer, search_terms
+from orchestrator.tools.adaptive_email import AdaptiveEmailTool, EmailDelivery, email_message, message_digest
 
 STATIC_DIR = Path(__file__).parent / "static"
 EXPORT_DIR = Path(__file__).resolve().parent.parent / "artifacts"
 security = SecurityPolicy()
+_acquirers: Dict[str, CapabilityAcquirer] = {}
+_acquirer_lock = threading.RLock()
+_email_deliveries: Dict[str, EmailDelivery] = {}
+
+
+def _capabilities() -> CapabilityAcquirer:
+    root = _config.default_data_dir() / "capabilities"
+    tenant = current_tenant()
+    key = f"{root}:{tenant}"
+    with _acquirer_lock:
+        if key not in _acquirers:
+            _acquirers[key] = CapabilityAcquirer(root, tenant)
+        return _acquirers[key]
+
+
+def _email_delivery() -> EmailDelivery:
+    root = _capabilities().root / "email-delivery"
+    key = str(root)
+    with _acquirer_lock:
+        if key not in _email_deliveries:
+            _email_deliveries[key] = EmailDelivery(root)
+        service = _email_deliveries[key]
+        # A shared server browser must never expose one user's mailbox to
+        # another tenant. Browser email is limited to the local workspace.
+        local = current_tenant() == "default" and not any(os.environ.get(name) for name in (
+            "ORCHESTRATOR_API_KEY", "ORCHESTRATOR_API_KEYS", "OIDC_ISSUER"))
+        service.browser_tool = next((tool for tool in [*_shared_mcp_tools, *_capabilities().connected_tools()]
+                                     if getattr(getattr(tool, "_mcp_tool", None), "name", "") == "browser_run_code"), None) if local else None
+        return service
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +338,21 @@ class RunOptions(BaseModel):
     only: Optional[List[str]] = None
 
 
+class CapabilitySearch(BaseModel):
+    query: str = Field(..., min_length=2, max_length=80)
+    kind: str = Field("mcp", pattern="^(mcp|skill)$")
+
+
+class ConnectCapability(BaseModel):
+    digest: str = Field(..., min_length=64, max_length=64)
+    approved: bool = False
+
+
+class BrowserEmailPermission(BaseModel):
+    approved: bool = False
+    digest: str = Field(..., min_length=64, max_length=64)
+
+
 class ProvideInputs(BaseModel):
     values: Dict[str, Any] = Field(default_factory=dict,
                                    description="input name -> value, for one step")
@@ -376,6 +423,10 @@ async def lifespan(_: FastAPI):
             pass
         if _shared_mcp_registry is not None:
             _shared_mcp_registry.close_all()
+        for service in _acquirers.values():
+            service.close()
+        _acquirers.clear()
+        _email_deliveries.clear()
         manager.state.close()
 
 
@@ -663,6 +714,83 @@ def _attach_configured_extras(workflow: Workflow) -> None:
         workflow.attach_skills("skills")
     for tool in _shared_mcp_tools:
         workflow.tools.register(tool)
+    _capabilities().attach(workflow.tools, workflow.skills)
+    workflow.tools.register(AdaptiveEmailTool(_email_delivery(), workflow.run_id))
+    mail_steps = [step for step in workflow.graph.steps.values() if step.requires_tool == "adaptive_email"]
+    if mail_steps:
+        from orchestrator.inputs import InputRequest
+        recipients = set(re.findall(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", workflow.description.replace('\\@', '@')))
+        for step in mail_steps:
+            if len(recipients) == 1:
+                recipient = next(iter(recipients))
+                field = next((field for field in step.inputs if field.name == "recipient"), None)
+                if field is None:
+                    field = InputRequest(name="recipient", prompt="Who should receive this email?", type="email")
+                    step.inputs.append(field)
+                if not field.provided:
+                    field.provide(recipient)
+        mail_ids = {step.id for step in mail_steps}
+        mail_credentials = {"SENDGRID_API_KEY", "EMAIL_FROM", "EMAIL_TO", "GMAIL_ADDRESS", "GMAIL_APP_PASSWORD", "email", "gmail"}
+        workflow.requirements.requirements = [req for req in workflow.requirements.requirements
+            if not (req.name in mail_credentials and set(req.needed_by).issubset(mail_ids))]
+        if workflow.state is not None:
+            workflow.state.update_run(workflow.run_id, graph=workflow.graph)
+
+
+def _planning_tools():
+    """The planner must see the same configured tools as execution."""
+    from orchestrator.tools import default_tool_manager
+    from orchestrator.connections import attach_connections
+    tools = default_tool_manager()
+    if Path("connections.json").exists():
+        attach_connections(tools, config_path="connections.json")
+    for tool in _shared_mcp_tools:
+        tools.register(tool)
+    _capabilities().attach(tools)
+    tools.register(AdaptiveEmailTool(_email_delivery()))
+    return tools
+
+
+@app.get("/api/capabilities")
+async def list_capabilities() -> Dict[str, Any]:
+    return {"extensions": _capabilities().list()}
+
+
+@app.post("/api/capabilities/search")
+async def search_capabilities(body: CapabilitySearch) -> Dict[str, Any]:
+    service = _capabilities()
+    search = service.search_skills if body.kind == "skill" else service.search_tools
+    return {"candidates": await asyncio.to_thread(search, body.query)}
+
+
+@app.get("/api/capabilities/{candidate_id}/review")
+async def review_capability(candidate_id: str) -> Dict[str, Any]:
+    return await asyncio.to_thread(_capabilities().review, candidate_id)
+
+
+@app.post("/api/capabilities/{candidate_id}/connect")
+async def connect_capability(candidate_id: str, body: ConnectCapability) -> Dict[str, Any]:
+    return await asyncio.to_thread(_capabilities().connect, candidate_id, body.digest, body.approved)
+
+
+@app.post("/api/runs/{run_id}/discover")
+async def discover_missing_capabilities(run_id: str) -> Dict[str, Any]:
+    workflow = manager.get(run_id)
+    queries = list(dict.fromkeys(
+        search_terms(req.name) for req in workflow.check_requirements().requirements
+        if req.kind.value in {"tool", "mcp_server"} and req.status.value == "missing"
+    ))[:3]
+    service = _capabilities()
+    candidates, errors = [], []
+    for query in queries:
+        if len(query) < 2:
+            continue
+        try:
+            candidates.extend(await asyncio.to_thread(service.search_tools, query))
+        except AcquisitionError as exc:
+            errors.append(str(exc))
+    return {"queries": queries, "candidates": list({c['id']: c for c in candidates}.values()),
+            "errors": errors}
 
 
 @app.post("/api/runs/clarify")
@@ -688,6 +816,7 @@ async def clarify_task(body: ClarifyTask) -> Dict[str, Any]:
 
 @app.post("/api/runs", status_code=201)
 async def create_run(body: CreateRun) -> Dict[str, Any]:
+    tools = await asyncio.to_thread(_planning_tools)
     workflow = await asyncio.to_thread(
         Workflow.from_description,
         body.description,
@@ -698,6 +827,7 @@ async def create_run(body: CreateRun) -> Dict[str, Any]:
         max_workers=body.max_workers,
         state=manager.state,
         verbose=False,
+        tool_manager=tools,
     )
     _attach_configured_extras(workflow)
     if body.ask_for_requirements:
@@ -710,6 +840,16 @@ async def create_run(body: CreateRun) -> Dict[str, Any]:
 
     remember_all(body.clarifications, body.description)
     return _snapshot(workflow)
+
+
+@app.post("/api/runs/{run_id}/replan", status_code=201)
+async def replan_with_connected_tools(run_id: str) -> Dict[str, Any]:
+    workflow = manager.get(run_id)
+    if manager.busy.get(run_id) or any(r.status.value != "pending" for r in workflow.results.values()):
+        raise HTTPException(status_code=409, detail="This task already started. Use its step editor to change tools without repeating completed work.")
+    result = await create_run(CreateRun(description=workflow.description))
+    result["previous_plan"] = run_id
+    return result
 
 
 @app.post("/api/setup/forget")
@@ -944,9 +1084,21 @@ async def list_pending_actions(run_id: str) -> Dict[str, Any]:
 
 
 @app.post("/api/runs/{run_id}/actions/{step_id}/approve")
-async def approve_action(run_id: str, step_id: str, resume: bool = True) -> Dict[str, Any]:
+async def approve_action(run_id: str, step_id: str, resume: bool = True,
+                         body: Optional[BrowserEmailPermission] = None) -> Dict[str, Any]:
     """Authorise a held irreversible action, then perform it."""
     workflow = manager.get(run_id)
+    action = workflow.pending_actions().get(step_id)
+    if action and action.tool == "adaptive_email":
+        details = _email_details(workflow, step_id)
+        if not body or not body.approved or body.digest != details["digest"]:
+            raise HTTPException(status_code=400, detail="Review and approve the exact email before sending")
+        if details.get("method") == "browser":
+            ready = details["status"] == "draft_ready"
+        else:
+            ready = details["api_available"]
+        if not ready:
+            raise HTTPException(status_code=409, detail="Configure email credentials or prepare a Gmail browser draft first")
     try:
         workflow.approve_action(step_id)
     except KeyError as exc:
@@ -954,6 +1106,34 @@ async def approve_action(run_id: str, step_id: str, resume: bool = True) -> Dict
     if resume:
         manager.launch(run_id, "resume")
     return {"approved": step_id}
+
+
+def _email_details(workflow: Workflow, step_id: str) -> dict:
+    action = workflow.pending_actions().get(step_id)
+    if action is None or action.tool != "adaptive_email":
+        raise HTTPException(status_code=404, detail="No email draft is awaiting review")
+    step = workflow.graph.get(step_id)
+    message = email_message(action.payload, {"inputs": {**workflow.all_input_values(), **step.input_values()}})
+    return _email_delivery().status(workflow.run_id, step_id, message)
+
+
+@app.post("/api/runs/{run_id}/email/{step_id}/open-browser")
+async def open_gmail_for_email(run_id: str, step_id: str, body: BrowserEmailPermission) -> dict:
+    workflow = manager.get(run_id)
+    details = _email_details(workflow, step_id)
+    if body.digest != details["digest"] or not body.approved:
+        raise HTTPException(status_code=400, detail="Approve browser access for this email first")
+    if manager.busy.get(run_id):
+        raise HTTPException(status_code=409, detail="Wait until the task pauses before opening Gmail")
+    result = await asyncio.to_thread(_email_delivery().open_browser, run_id, step_id, details["message"], body.approved)
+    return result
+
+
+@app.post("/api/runs/{run_id}/email/{step_id}/prepare-browser")
+async def prepare_gmail_draft(run_id: str, step_id: str) -> dict:
+    workflow = manager.get(run_id)
+    details = _email_details(workflow, step_id)
+    return await asyncio.to_thread(_email_delivery().prepare_browser, run_id, step_id, details["message"])
 
 
 @app.post("/api/runs/{run_id}/actions/{step_id}/reject")
@@ -1237,7 +1417,9 @@ def _snapshot(workflow: Workflow) -> Dict[str, Any]:
             step_id: [r.to_dict() for r in requests]
             for step_id, requests in workflow.input_form().items()
         },
-        "pending_actions": {sid: a.to_dict() for sid, a in workflow.pending_actions().items()},
+        "pending_actions": {sid: {**a.to_dict(), **({"email": _email_details(workflow, sid)}
+                            if a.tool == "adaptive_email" else {})}
+                            for sid, a in workflow.pending_actions().items()},
         "workspace_files": _workspace_files(workflow),
         "schedules": manager.state.list_schedules(workflow.run_id),
         "webhooks": manager.state.list_webhooks(workflow.run_id),
@@ -1249,3 +1431,8 @@ def _snapshot(workflow: Workflow) -> Dict[str, Any]:
 @app.exception_handler(KeyError)
 async def _key_error_handler(request: Any, exc: KeyError) -> JSONResponse:  # pragma: no cover
     return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+
+@app.exception_handler(AcquisitionError)
+async def _acquisition_error_handler(request: Any, exc: AcquisitionError) -> JSONResponse:
+    return JSONResponse(status_code=400, content={"detail": str(exc)})

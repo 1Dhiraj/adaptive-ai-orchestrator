@@ -7,6 +7,7 @@ requiring python-dotenv (falls back to a tiny parser).
 from __future__ import annotations
 
 import os
+import json
 import shutil
 import sys
 from dataclasses import dataclass, field
@@ -52,6 +53,50 @@ def _load_env_files() -> None:
 
 
 _load_env_files()
+
+MODEL_PREFERENCE_KEYS = {
+    "LLM_PROVIDER", "GEMINI_MODEL", "ANTHROPIC_MODEL", "OPENAI_MODEL",
+    "NVIDIA_MODEL", "OLLAMA_MODEL",
+}
+
+
+def model_preferences_path() -> Path:
+    return default_data_dir() / "model_preferences.json"
+
+
+def _load_model_preferences() -> None:
+    """Apply the user's dashboard model choice without storing any secret."""
+    path = model_preferences_path()
+    try:
+        values = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return
+    if isinstance(values, dict):
+        for key, value in values.items():
+            if key in MODEL_PREFERENCE_KEYS and isinstance(value, str) and value.strip():
+                os.environ[key] = value.strip()
+
+
+def save_model_preference(provider: str, model: str) -> Path:
+    """Persist a non-secret provider/model selection for future launches."""
+    provider = provider.strip().lower()
+    model = model.strip()
+    model_keys = {
+        "gemini": "GEMINI_MODEL", "anthropic": "ANTHROPIC_MODEL",
+        "openai": "OPENAI_MODEL", "nvidia": "NVIDIA_MODEL",
+        "ollama": "OLLAMA_MODEL",
+    }
+    if provider not in model_keys or not model:
+        raise ValueError("Choose a supported provider and model")
+    values = {"LLM_PROVIDER": provider, model_keys[provider]: model}
+    path = model_preferences_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(values, indent=2), encoding="utf-8")
+    os.environ.update(values)
+    return path
+
+
+_load_model_preferences()
 
 
 def _flag(name: str, default: bool = False) -> bool:

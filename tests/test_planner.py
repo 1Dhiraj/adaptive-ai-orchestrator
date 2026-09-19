@@ -141,12 +141,12 @@ class TestPlanning:
             resolved, note = TaskPlanner.resolve_tool(invented, available)
             assert resolved == expected, f"{invented} should resolve to {expected}"
 
-    def test_unresolvable_tool_is_dropped_not_left_broken(self):
+    def test_unresolvable_tool_is_preserved_for_discovery(self):
         from orchestrator.tools import default_tool_manager
 
         available = {t["name"] for t in default_tool_manager().describe()}
         resolved, note = TaskPlanner.resolve_tool("quantum_teleporter", available)
-        assert resolved is None
+        assert resolved == "quantum_teleporter"
         assert note and "does not exist" in note
 
     def test_build_graph_records_a_fuzzy_tool_repair(self):
