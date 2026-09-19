@@ -721,17 +721,22 @@ TOOL_ALIASES = {
     "shell": "terminal", "bash": "terminal", "command_line": "terminal",
     "filesystem": "workspace", "file_system": "workspace", "files": "workspace",
     "desktop": "hermes_desktop", "desktop_automation": "hermes_desktop",
-    "computer_use": "hermes_desktop", "computer-use": "hermes_desktop",
+    # computer_use is its own tool now, not an alias for the desktop backend:
+    # it picks between browser and desktop and enforces the plan, allow-list
+    # and limits that the raw backends do not.
+    "computer-use": "computer_use", "computer": "computer_use",
+    "screen": "computer_use", "browser_use": "computer_use",
     "hermes": "hermes_desktop",
 }
 
 
 def default_tool_manager() -> ToolManager:
     """A ToolManager with every built-in adapter registered."""
+    from .computer_use import ComputerUseTool
     from .hermes import HermesDesktopTool
 
     manager = ToolManager([
-        GitHubTool(), GitHubCLITool(), ArtifactStoreTool(),
+        ComputerUseTool(), GitHubTool(), GitHubCLITool(), ArtifactStoreTool(),
         PostgresTool(), PostgresCLITool(), SQLiteLocalTool(),
         CITool(), LocalTestRunnerTool(),
         SlackTool(), GmailTool(), EmailTool(), ConsoleNotifyTool(),

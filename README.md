@@ -559,6 +559,40 @@ Three shipped examples: `api-design-conventions` (backend), `writing-style`
 
 ---
 
+## Changing a requirement
+
+```bash
+orchestrator change <run-id> "use PostgreSQL instead of MongoDB"
+```
+
+Prints the requirement that changed, every affected step *with the reason it
+was affected*, and what stays reused — then asks before re-running anything.
+
+```
+Requirement change
+  database.engine: 'MongoDB' -> 'PostgreSQL'
+
+Affected steps (3):
+  schema                  database.engine: owner (P4)
+  backend                 database.engine: assumed fact
+  tests                   upstream may change; signature checked at execution
+
+Reused unchanged (2): frontend, requirements
+
+Apply this change and re-run the affected steps? [y/N]
+```
+
+`backend` there has **no dependency edge** to `schema`. It re-runs because it
+declared it relied on `database.engine` — which is the whole point: plain
+dependency tracking would have called it valid and left stale MongoDB code
+behind. Run `python examples/12_requirement_change.py` to watch it happen.
+
+`--yes` skips the prompt, `--no-rerun` applies the change without executing.
+Over HTTP the same split is `POST /change/prepare` (reads only) and
+`POST /change/apply` (refuses anything not explicitly confirmed).
+
+---
+
 ## Requirement changes (core Python API)
 
 The planner can extract requirement facts with a key, value, aliases and owner
@@ -824,6 +858,9 @@ uncovered remainder is credential-gated code that needs real accounts.
 | [09_api_connections.py](examples/09_api_connections.py) | Authenticated calls to any HTTP API (real httpbin requests) |
 | [10_skills.py](examples/10_skills.py) | Reference material matched into an agent's prompt |
 | [11_hermes_desktop.py](examples/11_hermes_desktop.py) | High-level Word task through the optional Hermes desktop worker |
+| [12_requirement_change.py](examples/12_requirement_change.py) | MongoDB → PostgreSQL; catches a step with no edge to the change |
+| [13_computer_use.py](examples/13_computer_use.py) | Browser/desktop control and every guard, in simulation |
+| [14_skill_discovery.py](examples/14_skill_discovery.py) | Search, review, approve — installs nothing without confirmation |
 
 ---
 
@@ -850,6 +887,42 @@ python -m orchestrator.cli bench  --repeats 5
 ```
 
 `--stub` on any command forces the offline LLM.
+
+## Computer use (browser and desktop)
+
+A step that must operate a real interface asks for the `computer_use`
+capability rather than naming a backend. The tool picks one:
+
+    browser (Playwright MCP)  →  desktop (Hermes)  →  nothing
+
+Browser first: anything inside a website is cheaper to drive, easier to
+observe, and can be restricted to a list of domains in a way that "control
+the computer" cannot.
+
+```bash
+ORCHESTRATOR_ALLOW_DESKTOP=1
+ORCHESTRATOR_COMPUTER_USE_ALLOW=example.com,notepad
+```
+
+Try it with no setup at all — `python examples/13_computer_use.py` runs in
+simulation and prints each guard refusing something.
+
+### The rules it enforces
+
+| Rule | What happens |
+|---|---|
+| Off by default | Nothing runs until `ORCHESTRATOR_ALLOW_DESKTOP` is set |
+| Approval first | The tool is irreversible, so the plan is shown and approved before anything moves |
+| Name your targets | A step that does not say which sites or apps it touches is refused |
+| Allow-list | Targets outside it are refused; **unset permits nothing**, so forgetting fails closed |
+| No secrets | Passwords, card numbers, API keys and one-time codes are refused before the backend sees them — ask the person, or read from the vault at use time |
+| Bounded | Action and time limits stop a run that goes wrong |
+| Logged | Every action appends to `workspace/<run-id>/computer_use.log.jsonl` |
+
+Subdomains are covered by a parent entry (`example.com` allows
+`www.example.com`) but lookalikes are not (`notexample.com` is refused).
+
+---
 
 ### Hermes desktop worker
 

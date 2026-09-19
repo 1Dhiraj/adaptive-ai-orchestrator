@@ -26,11 +26,24 @@ def test_workflow_replaces_default_adapter_with_run_scoped_workspace(make_workfl
     assert tool.workspace.name == "desktop-run"
 
 
-@pytest.mark.parametrize("alias", ["desktop", "desktop_automation", "computer_use", "hermes"])
+@pytest.mark.parametrize("alias", ["desktop", "desktop_automation", "hermes"])
 def test_common_names_resolve_to_hermes(alias):
     from orchestrator.tools.builtin import canonical_tool_name
 
     assert canonical_tool_name(alias) == "hermes_desktop"
+
+
+def test_computer_use_is_its_own_capability_not_a_hermes_alias():
+    """Hermes is one backend behind computer_use, not the same thing.
+
+    computer_use picks between a browser and the desktop and enforces the
+    approved plan, allow-list and limits; routing its name straight to
+    hermes_desktop would skip all of that.
+    """
+    from orchestrator.tools.builtin import canonical_tool_name
+
+    assert canonical_tool_name("computer_use") == "computer_use"
+    assert canonical_tool_name("computer-use") == "computer_use"
 
 
 def test_disabled_by_default(monkeypatch, tmp_path):

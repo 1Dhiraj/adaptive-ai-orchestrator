@@ -387,6 +387,13 @@ TOOL_CREDENTIALS: Dict[str, List[tuple]] = {
     # Sending needs an account to send *from*, not just an address to send to.
     "gmail": [("GMAIL_ADDRESS", "the Gmail account to send from"),
               ("GMAIL_APP_PASSWORD", "Gmail app password for that account")],
+    # Not secrets, but the wizard is where a person finds out this capability
+    # exists and that it is off until they deliberately turn it on and say
+    # where it may act. An empty allow-list permits nothing.
+    "computer_use": [
+        ("ORCHESTRATOR_ALLOW_DESKTOP", "set to 1 to let agents drive a browser or the desktop"),
+        ("ORCHESTRATOR_COMPUTER_USE_ALLOW", "comma-separated domains and apps it may touch"),
+    ],
     "stripe": [("STRIPE_API_KEY", "Stripe restricted API key")],
     "s3": [("AWS_ACCESS_KEY_ID", "AWS access key or use AWS_PROFILE"),
            ("AWS_SECRET_ACCESS_KEY", "AWS secret access key or use AWS_PROFILE"),

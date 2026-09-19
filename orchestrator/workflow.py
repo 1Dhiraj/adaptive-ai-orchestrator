@@ -193,6 +193,13 @@ class Workflow:
 
         if isinstance(self.tools.get("hermes_desktop"), HermesDesktopTool):
             self.tools.register(HermesDesktopTool(self.run_id))
+        # computer_use needs the manager itself to find its backends (a
+        # browser from MCP, or Hermes), which the default catalogue cannot
+        # supply because it is built before the manager exists.
+        from .tools.computer_use import ComputerUseTool
+
+        if isinstance(self.tools.get("computer_use"), ComputerUseTool):
+            self.tools.register(ComputerUseTool(self.run_id, tools=self.tools))
         from .planner import is_software_task
         if is_software_task(self.description):
             from .tools.workspace import coding_team_tools
