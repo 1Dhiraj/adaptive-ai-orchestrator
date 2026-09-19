@@ -319,6 +319,26 @@ class ChangeStep(BaseModel):
     new_requirement: Optional[str] = None
 
 
+class PrepareChange(BaseModel):
+    """A plain-English requirement change, e.g. 'use PostgreSQL instead of MongoDB'."""
+
+    request: str = Field(..., min_length=3)
+
+
+class ApplyChange(BaseModel):
+    """A proposal returned by /change/prepare, sent back verbatim to apply it.
+
+    The proposal carries its own digest and the graph revision it was built
+    against; the workflow rejects anything stale or edited, so a preview can
+    be shown to a person and confirmed later without risk of it landing on a
+    graph that moved underneath.
+    """
+
+    proposal: Dict[str, Any]
+    confirmed: bool = False
+    rerun: bool = True
+
+
 class EditStep(BaseModel):
     """Every field is optional; only what is sent gets changed."""
 
@@ -980,6 +1000,32 @@ async def change_step(run_id: str, step_id: str, body: ChangeStep) -> Dict[str, 
                    new_description=body.new_description,
                    new_requirement=body.new_requirement)
     return {"started": True, "step_id": step_id, "impact": workflow.impact_of(step_id)}
+
+
+@app.post("/api/runs/{run_id}/change/prepare")
+async def prepare_change(run_id: str, body: PrepareChange) -> Dict[str, Any]:
+    """Translate a requirement change and show its impact. Changes nothing."""
+    workflow = manager.get(run_id)
+    try:
+        return await asyncio.to_thread(workflow.prepare_change, body.request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/runs/{run_id}/change/apply")
+async def apply_change(run_id: str, body: ApplyChange) -> Dict[str, Any]:
+    """Apply a previously previewed change, once a person has confirmed it."""
+    workflow = manager.get(run_id)
+    if not body.confirmed:
+        raise HTTPException(
+            status_code=400,
+            detail="confirm the fact delta or plan diff before applying the change")
+    try:
+        await asyncio.to_thread(workflow.apply_change, body.proposal,
+                                confirmed=True, rerun=body.rerun)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _snapshot(workflow)
 
 
 @app.post("/api/runs/{run_id}/steps/{step_id}/inputs")
