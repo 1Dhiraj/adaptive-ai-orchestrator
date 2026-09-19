@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
 import re
 import threading
@@ -720,8 +721,8 @@ def get_provider(force_stub: bool = False) -> LLMProvider:
     """Return the process-wide provider, building it on first use.
 
     Selection follows :meth:`Settings.resolve_provider`: an explicit
-    ``LLM_PROVIDER``, else whichever API key is present (Gemini, then
-    Anthropic, then OpenAI), else the offline stub. A provider that fails to
+    ``LLM_PROVIDER``, else NVIDIA when its key is present, else the offline
+    stub. A provider that fails to
     construct (bad key, missing package) degrades to the stub rather than
     crashing the whole run.
     """
@@ -735,6 +736,23 @@ def get_provider(force_stub: bool = False) -> LLMProvider:
                 print(f"[llm] '{name}' unavailable ({exc}); falling back to stub provider.")
                 _default_provider = StubProvider()
         return _default_provider
+
+
+def provider_for_role(provider: LLMProvider, role: str) -> LLMProvider:
+    """Role-specific NVIDIA model without changing explicit/offline providers."""
+    if not isinstance(provider, NvidiaProvider):
+        return provider
+    env_role = re.sub(r"[^A-Z0-9]+", "_", role.upper())
+    model = os.environ.get(f"NVIDIA_MODEL_{env_role}", "").strip()
+    if not model or model == provider.model:
+        return provider
+    with provider._lock:
+        cache = getattr(provider, "_role_providers", {})
+        if model not in cache:
+            cache[model] = NvidiaProvider(api_key=provider.api_key, model=model,
+                                         base_url=provider.base_url, max_retries=provider.max_retries)
+        provider._role_providers = cache
+        return cache[model]
 
 
 def set_provider(provider: Optional[LLMProvider]) -> None:

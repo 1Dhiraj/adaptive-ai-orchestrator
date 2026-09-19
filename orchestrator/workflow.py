@@ -151,6 +151,12 @@ class Workflow:
         mcp_config: Optional[str] = None,
         action_approval: str = "live",
         skills_dir: Optional[str] = None,
+        change_aware: Optional[bool] = None,
+        semantic_cutoff: Optional[bool] = None,
+        equivalence_threshold: Optional[float] = None,
+        token_budget: Optional[int] = None,
+        change_llm: Optional[LLMProvider] = None,
+        judge_llm: Optional[LLMProvider] = None,
     ):
         if graph is None:
             graph = DependencyGraph(steps or [])
@@ -159,10 +165,26 @@ class Workflow:
         graph.validate()
 
         self.graph = graph
+        options = graph.change_settings
+        self.change_aware = (options.get("enabled", settings.change_aware)
+                             if change_aware is None else change_aware)
+        self.semantic_cutoff = (options.get("semantic_cutoff", settings.semantic_cutoff)
+                                if semantic_cutoff is None else semantic_cutoff)
+        self.equivalence_threshold = (options.get("threshold", settings.equivalence_threshold)
+                                     if equivalence_threshold is None else equivalence_threshold)
+        self.token_budget = options.get("token_budget", settings.plan_token_budget) if token_budget is None else token_budget
+        if not 0 <= self.equivalence_threshold <= 1 or self.token_budget <= 0:
+            raise ValueError("invalid equivalence threshold or plan token budget")
+        graph.change_settings = {"enabled": self.change_aware, "semantic_cutoff": self.semantic_cutoff,
+                                 "threshold": self.equivalence_threshold, "token_budget": self.token_budget}
         self.description = description
         self.run_id = run_id or new_run_id()
 
         self.llm = llm or get_provider()
+        from .llm import provider_for_role
+        self.change_llm = change_llm or provider_for_role(self.llm, "change_translator")
+        self.judge_llm = judge_llm or provider_for_role(self.llm, "equivalence_judge")
+        self._execution_lock = threading.RLock()
         self.tools = tool_manager or default_tool_manager()
         # The default catalogue is created before the workflow id is known.
         # Replace only our built-in Hermes adapter with a run-scoped instance;
@@ -362,6 +384,10 @@ class Workflow:
                 notes=self.requirements.notes,
             )
         self.requirements.check(self.tools)
+        from .change_aware import check_plan
+        validation = check_plan(self.graph, self.token_budget)
+        self.requirements.plan_errors = validation["errors"]
+        self.requirements.estimated_tokens = validation["estimated_tokens"]
         return self.requirements
 
     def print_requirements(self, width: int = 78) -> None:
@@ -521,6 +547,173 @@ class Workflow:
     # Scheduling
     # ------------------------------------------------------------------
 
+    def _assumption_keys(self, step, previous=None):
+        keys = set(step.assumes)
+        if previous:
+            keys.update(previous.assumed_facts)
+        # P4: ownership is always an assumption, even if the worker omitted it.
+        keys.update(f.key for f in self.graph.facts if f.owner == step.id)
+        return keys
+
+    def _input_hash(self, step, keys=None):
+        base = self.memory.input_hash(step)
+        if not self.change_aware or not self.graph.facts:
+            return base
+        if keys is None:
+            keys = self._assumption_keys(step, self.results.get(step.id))
+        from .change_aware import digest
+        values = self.graph.facts.values()
+        return content_hash(base, digest({k: values.get(k) for k in sorted(keys)}))
+
+    def _invalidation_reasons(self, step, previous):
+        if not previous or not previous.output:
+            return ["no cached result"]
+        reasons = []
+        if self.change_aware:
+            values = self.graph.facts.values()
+            for key, old in previous.assumed_facts.items():
+                if values.get(key) != old:
+                    owner = key in self.graph.facts and self.graph.facts[key].owner == step.id
+                    reasons.append(f"fact {key} changed" + (" (owner; P4)" if owner else " (assumed)"))
+        return reasons or ["definition, dependency output, or explicit rerun"]
+
+    def _record_assumptions(self, step, result, previous=None):
+        from .change_aware import parse_assumptions, detect_assumptions, equivalent
+        result.raw_output = result.output
+        result.change_status = "rerun"
+        if not self.change_aware or not self.graph.facts:
+            return
+        content, declared = parse_assumptions(result.output, self.graph.facts)
+        result.output = content
+        result.raw_output = content
+        declared.update(step.assumes)
+        detected = detect_assumptions(content, self.graph.facts)
+        keys = declared | detected | self._assumption_keys(step)
+        same = False
+        if previous and previous.output and not step.requires_tool:
+            if self.semantic_cutoff:
+                same, usage, method = equivalent(previous.output, content, step.output_type,
+                    judge=self.judge_llm, theta=self.equivalence_threshold,
+                    consumers=[s.description for s in self.graph if step.id in s.depends_on])
+                result.usage = result.usage + usage
+            else:
+                same = content == previous.output
+            if same:
+                result.output = previous.output  # canonical downstream input
+                keys.update(previous.assumed_facts)
+                declared.update(previous.declared_assumptions)
+                detected.update(previous.detected_assumptions)
+                result.change_status = "cut_off"
+        result.declared_assumptions = sorted(declared)
+        result.detected_assumptions = sorted(detected)
+        values = self.graph.facts.values()
+        result.assumed_facts = {k: values[k] for k in sorted(keys) if k in values}
+        result.input_hash = self._input_hash(step, keys=set(result.assumed_facts))
+
+    def _change_revision(self):
+        from .change_aware import digest
+        return digest({"graph": self.graph.to_dict(), "results": {
+            sid: {"status": r.status.value, "input": r.input_hash, "output": r.output_hash,
+                  "assumed_facts": r.assumed_facts} for sid, r in self.results.items()},
+            "pending": {k: a.to_storage_dict() for k, a in self._pending_actions.items()},
+            "approved_actions": sorted(self._approved_actions)})
+
+    def preview_fact_change(self, delta):
+        """Pure preview. Affected descendants may stop at an exact/semantic cutoff."""
+        if not self.change_aware:
+            raise ValueError("fact changes require ORCHESTRATOR_CHANGE_AWARE=true")
+        self.graph.facts.changed(delta)
+        changed = {k: v for k, v in delta.items() if self.graph.facts[k].value != v}
+        reasons = {}
+        for step in self.graph:
+            hits = set(changed) & self._assumption_keys(step, self.results.get(step.id))
+            if hits:
+                reasons[step.id] = [f"{k}: " + ("owner (P4)" if self.graph.facts[k].owner == step.id
+                                               else "assumed fact") for k in sorted(hits)]
+        affected = self.graph.affected_by(reasons)
+        for sid in sorted(affected - reasons.keys()):
+            reasons[sid] = ["upstream may change; signature checked at execution"]
+        proposal = {"kind": "facts", "revision": self._change_revision(),
+                    "delta": changed, "old_values": {k: self.graph.facts[k].value for k in changed},
+                    "affected": sorted(affected), "reasons": reasons}
+        from .change_aware import digest
+        proposal["digest"] = digest(proposal)
+        return proposal
+
+    def prepare_change(self, request):
+        """Translate or re-plan, returning a reviewable proposal without running tools."""
+        from .change_aware import translate_change, plan_diff, digest
+        from .planner import TaskPlanner
+        with self._execution_lock:
+            if not self.change_aware:
+                raise ValueError("fact changes require ORCHESTRATOR_CHANGE_AWARE=true")
+            revision = self._change_revision()
+            delta, replan, usage = translate_change(request, self.graph.facts, self.change_llm)
+            if not replan:
+                proposal = self.preview_fact_change(delta)
+                proposal.pop("digest")
+                proposal["translation_usage"] = usage.to_dict()
+                proposal["digest"] = digest(proposal)
+                return proposal
+            plan = TaskPlanner(llm=self.change_llm).plan(self.description,
+                extra_guidance=f"Revise this plan for the change: {request}\n"
+                               + json.dumps(self.graph.to_dict()), tools=self.tools)
+            if plan.requirements.plan_errors:
+                raise ValueError("re-plan failed validation: " + "; ".join(plan.requirements.plan_errors))
+            proposal = {"kind": "replan", "revision": revision, "request": request,
+                        "graph": plan.graph.to_dict(), "requirements": plan.requirements.to_dict(),
+                        "diff": plan_diff(self.graph, plan.graph),
+                        "translation_usage": usage.to_dict(), "planning_usage": plan.usage.to_dict()}
+            proposal["digest"] = digest(proposal)
+            return proposal
+
+    def apply_change(self, proposal, *, confirmed=False, rerun=True):
+        """Apply exactly a reviewed proposal; old or altered previews are rejected."""
+        from .change_aware import digest, check_plan
+        if confirmed is not True:
+            raise ValueError("confirm the fact delta or plan diff before applying the change")
+        with self._execution_lock:
+            if not self.change_aware:
+                raise ValueError("fact changes require ORCHESTRATOR_CHANGE_AWARE=true")
+            body = {k: v for k, v in proposal.items() if k != "digest"}
+            if digest(body) != proposal.get("digest") or proposal.get("revision") != self._change_revision():
+                raise ValueError("change preview is stale or modified; preview and confirm again")
+            if proposal["kind"] == "facts":
+                if not proposal["delta"]:
+                    return None
+                candidate = DependencyGraph.from_dict(self.graph.to_dict())
+                candidate.facts = candidate.facts.changed(proposal["delta"])
+                affected = set(proposal["affected"])
+            elif proposal["kind"] == "replan":
+                candidate = DependencyGraph.from_dict(proposal["graph"])
+                candidate.change_settings = dict(self.graph.change_settings)
+                affected = set(self.graph.steps) | set(candidate.steps)
+            else:
+                raise ValueError("unknown change proposal")
+            errors = check_plan(candidate, self.token_budget)["errors"]
+            if errors:
+                raise ValueError("invalid changed plan: " + "; ".join(errors))
+            # Discard approval of old payloads before changing any input.
+            for sid in affected:
+                self._approved_actions.discard(sid)
+                self._approved.discard(sid)
+                self._pending_actions.pop(sid, None)
+                if self.state:
+                    self.state.delete_pending_action(self.run_id, sid)
+            self.graph = candidate
+            if proposal["kind"] == "replan":
+                self.results = {s.id: StepResult(step_id=s.id) for s in candidate}
+                self.memory.clear()
+                self.requirements = RequirementsReport.from_dict(proposal["requirements"])
+                self.register_planned_agents(self.requirements.agents)
+                if self.state:
+                    self.state.clear_results(self.run_id)
+            if self.state:
+                self.state.update_run(self.run_id, graph=self.graph)
+            self.bus.publish(EventType.LOG, run_id=self.run_id,
+                             message="confirmed requirement change", change=proposal)
+            return self._run_plan(reason="requirement change") if rerun else None
+
     def _should_run(self, step: Step, force: Set[str]) -> tuple:
         """Return ``(should_run, reason)`` for one step."""
         if step.id in force:
@@ -532,10 +725,14 @@ class Workflow:
         if cached is None or cached.status not in USABLE or not cached.output:
             return True, "no cached result"
 
+        if self.change_aware and cached.assumed_facts:
+            values = self.graph.facts.values()
+            if any(values.get(k) != v for k, v in cached.assumed_facts.items()):
+                return True, "assumed requirement fact changed"
         if not self.smart_invalidation:
             return False, "cached"
 
-        current_hash = self.memory.input_hash(step)
+        current_hash = self._input_hash(step)
         if cached.input_hash and cached.input_hash == current_hash:
             return False, "inputs unchanged"
         return True, "inputs changed"
@@ -577,6 +774,14 @@ class Workflow:
         ]
 
     def _run_plan(self, force: Optional[Set[str]] = None, reason: str = "run") -> RunReport:
+        with self._execution_lock:
+            from .change_aware import check_plan
+            errors = check_plan(self.graph, self.token_budget)["errors"]
+            if errors:
+                raise ValueError("invalid plan: " + "; ".join(errors))
+            return self._run_plan_unlocked(force, reason)
+
+    def _run_plan_unlocked(self, force=None, reason="run"):
         force = set(force or ())
         report = RunReport(self.run_id, reason)
         self.bus.publish(EventType.RUN_STARTED, run_id=self.run_id, message=reason,
@@ -630,7 +835,7 @@ class Workflow:
                         step_id=step_id, status=StepStatus.NOT_APPLICABLE,
                         output=f"Branch not taken: {condition_text}",
                         started_at=time.time(), ended_at=time.time(),
-                        input_hash=self.memory.input_hash(step),
+                        input_hash=self._input_hash(step),
                     )
                     result.output_hash = content_hash(result.output)
                     self.results[step_id] = result
@@ -644,6 +849,7 @@ class Workflow:
 
                 should_run, why = self._should_run(step, force)
                 if not should_run:
+                    self.results[step_id].change_status = "reused"
                     self._mark(step_id, StepStatus.SKIPPED)
                     report.reused.append(step_id)
                     self.bus.publish(EventType.STEP_SKIPPED, run_id=self.run_id,
@@ -741,9 +947,11 @@ class Workflow:
     # ------------------------------------------------------------------
 
     def _execute_step(self, step: Step, report: RunReport) -> StepResult:
+        previous = self.results.get(step.id)
         result = StepResult(step_id=step.id, status=StepStatus.RUNNING, started_at=time.time())
         result.tool_requested = step.requires_tool
-        result.input_hash = self.memory.input_hash(step)
+        result.input_hash = self._input_hash(step)
+        result.invalidation_reasons = self._invalidation_reasons(step, previous)
         with self._lock:
             self.results[step.id] = result
 
@@ -753,6 +961,9 @@ class Workflow:
 
         agent = self.agents.get(step.agent_role)
         context = self.memory.build_context(step, self.graph)
+        if self.change_aware and self.graph.facts:
+            from .change_aware import fact_context
+            context += fact_context(self.graph.facts, step.output_type)
 
         last_error: Optional[BaseException] = None
         for attempt in range(step.max_retries + 1):
@@ -782,8 +993,9 @@ class Workflow:
             result.status = StepStatus.DONE
             result.output = outcome.output
             result.usage = outcome.usage
+            self._record_assumptions(step, result, previous)
             result.ended_at = time.time()
-            result.output_hash = content_hash(outcome.output)
+            result.output_hash = content_hash(result.output)
             if outcome.tool_invocation is not None:
                 invocation = outcome.tool_invocation
                 result.tool_used = invocation.tool_used
@@ -797,17 +1009,20 @@ class Workflow:
                         message=f"'{step.requires_tool}' unavailable; used '{invocation.tool_used}'",
                         **invocation.to_dict())
 
-            self.memory.store(step.id, outcome.output)
+            self.memory.store(step.id, result.output)
             with self._lock:
                 self.results[step.id] = result
                 report.executed.append(step.id)
-                report.usage = report.usage + outcome.usage
+                report.usage = report.usage + result.usage
             self._persist(result)
             self.bus.publish(EventType.STEP_FINISHED, run_id=self.run_id, step_id=step.id,
                              message=f"done in {result.duration_s:.2f}s "
                                      f"({result.usage.total_tokens} tokens)",
                              duration_s=round(result.duration_s, 4),
-                             preview=outcome.output[:400],
+                             preview=result.output[:400],
+                             change_status=result.change_status,
+                             assumed_facts=result.assumed_facts,
+                             invalidation_reasons=result.invalidation_reasons,
                              usage=result.usage.to_dict())
             return result
 
@@ -880,7 +1095,7 @@ class Workflow:
         result = self.results.get(action.step_id) or StepResult(step_id=action.step_id)
         result.started_at = result.started_at or time.time()
         result.tool_requested = action.tool
-        result.input_hash = self.memory.input_hash(step)
+        result.input_hash = self._input_hash(step)
 
         try:
             invocation = agent.call_tool(step, action.tool, action.payload, self.tools,
@@ -905,6 +1120,7 @@ class Workflow:
         result.status = StepStatus.DONE
         result.output = agent.merge_tool_result(action.agent_output, action.tool, invocation)
         result.usage = action.usage
+        self._record_assumptions(step, result)
         result.tool_used = invocation.tool_used
         result.used_fallback = invocation.used_fallback
         result.ended_at = time.time()
@@ -1007,7 +1223,7 @@ class Workflow:
             if status is StepStatus.SKIPPED:
                 # Reused output stays valid; refresh the signature so the
                 # next comparison is against current inputs.
-                result.input_hash = self.memory.input_hash(self.graph.get(step_id))
+                result.input_hash = self._input_hash(self.graph.get(step_id))
             self.results[step_id] = result
         self._persist(self.results[step_id])
 

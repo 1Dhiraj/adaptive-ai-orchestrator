@@ -37,7 +37,11 @@ class DependencyGraph:
     makes the benchmark numbers comparable.
     """
 
-    def __init__(self, steps: Optional[Iterable[Step]] = None):
+    def __init__(self, steps: Optional[Iterable[Step]] = None, *, facts=(), change_settings=None):
+        from .change_aware import FactStore
+
+        self.facts = facts if isinstance(facts, FactStore) else FactStore(facts)
+        self.change_settings = dict(change_settings or {})
         self.steps: Dict[str, Step] = {}
         self._insertion_index: Dict[str, int] = {}
         for step in steps or []:
@@ -261,11 +265,14 @@ class DependencyGraph:
         return {
             "steps": [self.steps[sid].to_dict() for sid in self.topological_order()],
             "levels": self.execution_levels(),
+            "facts": self.facts.to_list(),
+            "change_settings": self.change_settings,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "DependencyGraph":
-        return cls(Step.from_dict(s) for s in data["steps"])
+        return cls((Step.from_dict(s) for s in data["steps"]),
+                   facts=data.get("facts", []), change_settings=data.get("change_settings"))
 
     def to_mermaid(self) -> str:
         """Render the DAG as a mermaid flowchart (handy for READMEs/reports)."""

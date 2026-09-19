@@ -243,6 +243,8 @@ class RequirementsReport:
     agents: List[AgentSpec] = field(default_factory=list)
     #: Free-text notes from the planner (assumptions, caveats).
     notes: List[str] = field(default_factory=list)
+    plan_errors: List[str] = field(default_factory=list)
+    estimated_tokens: int = 0
 
     # -- checking ---------------------------------------------------------
 
@@ -264,7 +266,7 @@ class RequirementsReport:
     @property
     def can_run(self) -> bool:
         """True when nothing is hard-missing. Simulated/fallback still runs."""
-        return not self.blockers
+        return not self.blockers and not self.plan_errors
 
     @property
     def degraded(self) -> List[Requirement]:
@@ -316,6 +318,11 @@ class RequirementsReport:
             for note in self.notes:
                 lines.append(f"  - {note}")
 
+        if self.estimated_tokens:
+            lines.append(f"\nEstimated plan tokens (not measured usage): {self.estimated_tokens}")
+        if self.plan_errors:
+            lines.append("\nPlan errors:")
+            lines.extend(f"  - {error}" for error in self.plan_errors)
         lines.append("\n" + "-" * width)
         if self.can_run:
             degraded = self.degraded
@@ -327,7 +334,8 @@ class RequirementsReport:
             else:
                 lines.append("READY TO RUN - everything required is configured.")
         else:
-            lines.append(f"BLOCKED - {len(self.blockers)} requirement(s) must be satisfied first:")
+            lines.append(f"BLOCKED - {len(self.blockers)} missing requirement(s), "
+                         f"{len(self.plan_errors)} plan error(s):")
             for req in self.blockers:
                 lines.append(f"  - {req.name} ({req.kind.value}): {req.detail}")
                 if req.setup:
@@ -348,6 +356,8 @@ class RequirementsReport:
             "can_run": self.can_run,
             "blockers": [r.name for r in self.blockers],
             "degraded": [r.name for r in self.degraded],
+            "plan_errors": self.plan_errors,
+            "estimated_tokens": self.estimated_tokens,
         }
 
     @classmethod
@@ -356,6 +366,8 @@ class RequirementsReport:
             requirements=[Requirement.from_dict(r) for r in data.get("requirements") or []],
             agents=[AgentSpec.from_dict(a) for a in data.get("agents") or []],
             notes=list(data.get("notes") or []),
+            plan_errors=list(data.get("plan_errors") or []),
+            estimated_tokens=int(data.get("estimated_tokens") or 0),
         )
 
 

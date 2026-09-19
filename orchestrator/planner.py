@@ -58,6 +58,9 @@ Respond with ONLY valid JSON, no markdown fences and no commentary:
       "name": "Human readable name",
       "role": "must match one of the agents above",
       "description": "One or two sentences stating exactly what to produce.",
+      "output_type": "code | json | text",
+      "accepts": ["code", "json", "text"],
+      "assumes": ["requirement_fact_key"],
       "depends_on": ["id_of_prerequisite", ...],
       "tool": "EXACT name from the tool list supplied below, or null",
       "condition": {"source":"earlier_task_id or trigger.field", "operator":"contains | not_contains | equals | not_equals | exists | truthy", "value":"comparison value"},
@@ -74,6 +77,7 @@ Respond with ONLY valid JSON, no markdown fences and no commentary:
       ]
     }
   ],
+  "facts": [{"key": "database", "value": "MongoDB", "aliases": ["Mongo"], "owner": "task_id"}],
   "notes": ["assumptions or caveats worth surfacing to the operator"]
 }
 
@@ -82,6 +86,13 @@ yourself to generic software roles: a legal review task wants a
 "contract_analyst", a biology task wants a "molecular_biologist". Write each
 system_prompt so it states the expertise AND the concrete deliverable format.
 Reuse one agent across several tasks when the expertise is the same.
+
+FACTS - extract concrete, changeable requirements actually stated by the user.
+Do not invent values. Each fact has a unique key, current value, aliases for
+that value, and one owner task. Never include secrets or credentials. Declare
+assumes on every task directly depending on a fact, including hidden dependencies.
+Refer to facts by key in task descriptions instead of hard-coding their values.
+Use output_type and accepts to describe deliverables and compatible inputs.
 
 REQUIREMENTS - declare everything the work genuinely depends on:
   - "tool": one of the tools in the supplied catalogue, including workspace
@@ -396,7 +407,9 @@ class TaskPlanner:
                 prompt += ("\n\nThe ONLY tools that exist are these. Use a name from "
                            f"this list verbatim, or null. Never invent a tool name:\n{catalogue}")
 
-        response = self.llm.generate(prompt, system=self.system_prompt, json_mode=True)
+        from .llm import provider_for_role
+        response = provider_for_role(self.llm, "planner").generate(
+            prompt, system=self.system_prompt, json_mode=True)
         parsed = extract_json(response.text)
 
         used_fallback = False
@@ -414,6 +427,14 @@ class TaskPlanner:
         available = {t["name"] for t in tools.describe()} if tools is not None else None
         graph, graph_repairs = self.build_graph(parsed["tasks"], declared_roles, available)
         repairs.extend(graph_repairs)
+        from .change_aware import FactStore, check_plan
+        from .config import settings
+
+        try:
+            graph.facts = FactStore(parsed.get("facts") or [])
+        except (TypeError, ValueError) as exc:
+            raise PlanningError(f"invalid requirement facts: {exc}") from exc
+        validation = check_plan(graph, settings.plan_token_budget)
         if used_fallback:
             repairs.insert(0, "planner response was unusable; applied a generic fallback plan")
 
@@ -431,6 +452,8 @@ class TaskPlanner:
             requirements=merge_requirements(declared, infer_requirements(graph)),
             agents=agents,
             notes=[str(n) for n in (parsed.get("notes") or []) if str(n).strip()],
+            plan_errors=validation["errors"],
+            estimated_tokens=validation["estimated_tokens"],
         )
         if tools is None:
             from .tools import default_tool_manager
@@ -584,6 +607,9 @@ class TaskPlanner:
                 requires_tool=tool,
                 inputs=filter_inputs(parse_declared_inputs(task.get("inputs"))),
                 condition=condition,
+                output_type=str(task.get("output_type", "text")),
+                accepts=task.get("accepts", ["code", "json", "text"]),
+                assumes=task.get("assumes", []),
             ))
 
         if not steps:

@@ -113,6 +113,11 @@ class Settings:
 
     # -- orchestration ----------------------------------------------------
     max_workers: int = field(default_factory=lambda: _int("ORCHESTRATOR_MAX_WORKERS", 4))
+    change_aware: bool = field(default_factory=lambda: _flag("ORCHESTRATOR_CHANGE_AWARE", True))
+    semantic_cutoff: bool = field(default_factory=lambda: _flag("ORCHESTRATOR_SEMANTIC_CUTOFF", False))
+    equivalence_threshold: float = field(default_factory=lambda: float(
+        os.environ.get("ORCHESTRATOR_EQUIVALENCE_THRESHOLD", "0.95")))
+    plan_token_budget: int = field(default_factory=lambda: _int("ORCHESTRATOR_PLAN_TOKEN_BUDGET", 20000))
     #: Per-dependency character budget when assembling shared context.
     context_char_budget: int = field(default_factory=lambda: _int("ORCHESTRATOR_CONTEXT_BUDGET", 1200))
 
@@ -132,8 +137,8 @@ class Settings:
     def resolve_provider(self) -> str:
         """Which provider ``get_provider()`` will build.
 
-        Precedence: forced stub > explicit LLM_PROVIDER > first API key found
-        (gemini, then anthropic, then openai) > stub. Ollama is deliberately
+        Precedence: forced stub > explicit LLM_PROVIDER > NVIDIA key > stub.
+        Other providers remain available through an explicit selection. Ollama is deliberately
         never auto-selected -- it needs no key, so key-presence can't detect
         it, and guessing a local server is running (and blocking on a
         connection attempt) would surprise a user who has no intention of
@@ -143,12 +148,6 @@ class Settings:
             return "stub"
         if self.llm_provider:
             return self.llm_provider
-        if self.gemini_api_key:
-            return "gemini"
-        if self.anthropic_api_key:
-            return "anthropic"
-        if self.openai_api_key:
-            return "openai"
         if self.nvidia_api_key:
             return "nvidia"
         return "stub"

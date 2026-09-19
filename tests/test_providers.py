@@ -242,13 +242,15 @@ class TestProviderSelection:
         assert Settings().resolve_provider() == "nvidia"
 
         monkeypatch.setenv("OPENAI_API_KEY", "x")
-        assert Settings().resolve_provider() == "openai", "openai outranks nvidia"
+        assert Settings().resolve_provider() == "nvidia"
 
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
-        assert Settings().resolve_provider() == "anthropic", "anthropic outranks openai"
+        assert Settings().resolve_provider() == "nvidia"
 
         monkeypatch.setenv("GEMINI_API_KEY", "x")
-        assert Settings().resolve_provider() == "gemini", "gemini outranks the rest"
+        assert Settings().resolve_provider() == "nvidia"
+        monkeypatch.delenv("NVIDIA_API_KEY")
+        assert Settings().resolve_provider() == "stub", "other providers require explicit selection"
 
     def test_explicit_llm_provider_wins_over_key_presence(self, monkeypatch):
         from orchestrator.config import Settings

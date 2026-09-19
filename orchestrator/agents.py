@@ -234,7 +234,9 @@ class Agent:
         :mod:`orchestrator.skills`) folded into the prompt as-is.
         """
         prompt = self.build_prompt(step, context, tool_manager, skills_block)
-        response = self.llm.generate(
+        from .llm import provider_for_role
+        provider = provider_for_role(provider_for_role(self.llm, "agents"), self.declared_role)
+        response = provider.generate(
             prompt,
             system=self.build_system_prompt(),
             metadata={"role": self.role, "step_id": step.id},

@@ -20,6 +20,20 @@ from orchestrator.workflow import Workflow
 
 
 @pytest.fixture(autouse=True)
+def no_developer_mcp_config(monkeypatch):
+    """Tests may start explicit fake MCP servers, never the user's .mcp.json."""
+    from orchestrator.tools.mcp import McpRegistry
+    original = McpRegistry.attach
+
+    def attach(self, tool_manager, specs=None, config_path=".mcp.json"):
+        if specs is None and config_path == ".mcp.json":
+            return []
+        return original(self, tool_manager, specs=specs, config_path=config_path)
+
+    monkeypatch.setattr(McpRegistry, "attach", attach)
+
+
+@pytest.fixture(autouse=True)
 def stub_llm():
     """Force the offline provider for every test, and reset it afterwards."""
     provider = StubProvider()

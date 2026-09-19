@@ -214,6 +214,7 @@ class TestNotify:
     def test_email_builds_a_sendgrid_payload(self, monkeypatch, http_calls):
         monkeypatch.setattr(builtin.settings, "sendgrid_api_key", "SG.test")
         monkeypatch.setenv("EMAIL_TO", "dev@example.com")
+        monkeypatch.setenv("EMAIL_FROM", "sender@example.com")
         EmailTool().execute('report\nTOOL_DIRECTIVE: {"subject": "Nightly build"}')
         call = http_calls[0]
         assert call["url"] == "https://api.sendgrid.com/v3/mail/send"
