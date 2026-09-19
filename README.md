@@ -37,10 +37,9 @@ python main.py            # the four headline scenarios, no API key needed
 
 With no API key set for anything, everything runs on a deterministic offline
 LLM, so the demo, the tests and the benchmarks all work out of the box and
-give identical results on every machine. Set `GEMINI_API_KEY`,
-`ANTHROPIC_API_KEY` or `OPENAI_API_KEY` to switch to that provider — or run
-`ollama pull llama3.1` and `LLM_PROVIDER=ollama` for free local inference with
-no key and no rate limit. See [Which LLM provider](#which-llm-provider).
+give identical results on every machine. Set `NVIDIA_API_KEY` to select NVIDIA
+NIM automatically, or select another provider explicitly with `LLM_PROVIDER`.
+See [Which LLM provider](#which-llm-provider).
 
 ---
 
@@ -560,11 +559,77 @@ Three shipped examples: `api-design-conventions` (backend), `writing-style`
 
 ---
 
+## Requirement changes (core Python API)
+
+The planner can extract requirement facts with a key, value, aliases and owner
+step. Workers declare assumptions; whole-word matches of fact values or aliases
+also record hidden dependencies. Signatures include those facts' current values.
+The owner always depends on its own fact (P4), even when it omits its declaration.
+
+```python
+from orchestrator import Step, Workflow
+from orchestrator.graph import DependencyGraph
+from orchestrator.change_aware import Fact
+
+graph = DependencyGraph([
+    Step("storage", "Define the database schema", "database"),
+    Step("client", "Write a client for the database fact", "backend",
+         assumes=["database"]),  # no edge to storage: a hidden dependency
+    Step("tests", "Test the client", "testing", depends_on=["client"]),
+], facts=[Fact("database", "MongoDB", "storage", ["Mongo"])])
+wf = Workflow(graph=graph)
+wf.run_full()
+
+proposal = wf.prepare_change("use PostgreSQL instead of MongoDB")
+print(proposal)  # old/new values, affected steps and reasons; no tools run
+if input("Apply this exact change? [y/N] ").strip().lower() == "y":
+    report = wf.apply_change(proposal, confirmed=True)
+```
+
+`preview_fact_change({"database": "PostgreSQL"})` provides the same preview
+without a translator call. When no key matches, `prepare_change` returns a new
+plan plus a diff for review; confirming a re-plan conservatively clears cached
+results. Stale or modified previews are rejected. Old pending action approvals
+are revoked for affected steps, so a revised payload needs its own approval.
+
+Facts, declared/detected assumptions, actual generated output (`raw_output`),
+canonical output (`output`), invalidation reasons and `reused` / `rerun` /
+`cut_off` status persist with the workflow. The requirements report checks
+output types (`code`, `json`, `text`), accepted dependency types, fact owners,
+assumption keys and a **planning token estimate**, not measured API usage.
+
+`ORCHESTRATOR_CHANGE_AWARE=false` keeps structural signature behaviour.
+`ORCHESTRATOR_SEMANTIC_CUTOFF=false` is the default: only identical outputs
+stop propagation. Opting in adds Python AST equivalence, canonical JSON
+comparison and an LLM text judge above the bag-of-words cosine threshold
+(`ORCHESTRATOR_EQUIVALENCE_THRESHOLD=0.95`). Unknown code languages use
+conservative literal comparison. Tool-backed steps never receive semantic
+cutoff. The judge's reported tokens are included in step usage.
+
+Semantic cutoff has **not been measured on NVIDIA**. Existing research results
+remain unchanged. CLI/API/dashboard change controls are the next phase;
+these Python methods are the current entry points. Offline translation supports
+simple `change X to Y` and `use Y instead of X` requests; other requests return
+a reviewable generic re-plan rather than claiming full language understanding.
+
 ## Which LLM provider
 
-Four real providers, auto-detected from whichever API key is present —
-**Gemini, then Anthropic, then OpenAI** — plus **Ollama** for free local
-inference, and the deterministic **stub** when none of the above apply.
+NVIDIA NIM is selected when `NVIDIA_API_KEY` is present. Without it, automatic
+selection uses the deterministic **stub**. An explicit `LLM_PROVIDER` overrides
+this choice; Gemini, Anthropic, OpenAI and Ollama remain supported.
+
+```dotenv
+LLM_PROVIDER=nvidia
+NVIDIA_API_KEY=your-key-in-your-local-env-file
+NVIDIA_MODEL=nvidia/nemotron-3-super-120b-a12b
+NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
+```
+
+Never commit your key. Optional `NVIDIA_MODEL_AGENTS`, `NVIDIA_MODEL_PLANNER`,
+`NVIDIA_MODEL_CHANGE_TRANSLATOR` and `NVIDIA_MODEL_EQUIVALENCE_JUDGE` override
+the model for those roles; `NVIDIA_MODEL_<SPECIALIST_ROLE>` overrides an
+individual specialist. Empty overrides inherit the base model. Offline or
+explicitly injected non-NVIDIA providers remain offline/non-NVIDIA.
 
 ```bash
 export LLM_PROVIDER=ollama              # force a specific one
@@ -579,7 +644,8 @@ wf = Workflow(steps, llm=build_provider("openai"))
 
 | Provider | Needs | Notes |
 |---|---|---|
-| `gemini` | `GEMINI_API_KEY` | Default when present |
+| `nvidia` | `NVIDIA_API_KEY` | Automatic primary; OpenAI-compatible NVIDIA NIM endpoint |
+| `gemini` | `GEMINI_API_KEY` | Select explicitly |
 | `anthropic` | `ANTHROPIC_API_KEY` | Claude Messages API |
 | `openai` | `OPENAI_API_KEY` | Also fits Azure OpenAI / OpenRouter / vLLM via `OPENAI_BASE_URL` |
 | `ollama` | nothing — local server | Free, offline, no rate limit. `ollama pull llama3.1`, then `LLM_PROVIDER=ollama` |
@@ -811,8 +877,13 @@ Everything is optional; copy [.env.example](.env.example) to `.env.local`.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `LLM_PROVIDER` | auto | Force `gemini`\|`anthropic`\|`openai`\|`ollama`\|`stub` |
-| `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | — | Auto-detected in that order; none set ⇒ offline stub |
+| `LLM_PROVIDER` | auto | Force `nvidia`\|`gemini`\|`anthropic`\|`openai`\|`ollama`\|`stub` |
+| `NVIDIA_API_KEY` | — | Auto-select NVIDIA when present; otherwise offline stub |
+| `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | — | Used only when the corresponding provider is selected |
+| `ORCHESTRATOR_CHANGE_AWARE` | `true` | Fact assumptions and owner-forced invalidation |
+| `ORCHESTRATOR_SEMANTIC_CUTOFF` | `false` | Enable unmeasured semantic cutoff for reasoning steps |
+| `ORCHESTRATOR_EQUIVALENCE_THRESHOLD` | `0.95` | Minimum cosine similarity before a text judge call |
+| `ORCHESTRATOR_PLAN_TOKEN_BUDGET` | `20000` | Limit the estimated plan tokens before execution |
 | `OLLAMA_MODEL` / `OLLAMA_BASE_URL` | `llama3.1` / `localhost:11434` | Only used when `LLM_PROVIDER=ollama` |
 | `ORCHESTRATOR_MAX_WORKERS` | `4` | Parallel step concurrency |
 | `ORCHESTRATOR_CONTEXT_BUDGET` | `1200` | Chars of each dependency's output passed downstream |
