@@ -194,7 +194,12 @@ settings = Settings()
 
 
 def reload_settings() -> Settings:
-    """Re-read the environment. Mainly for tests that monkeypatch os.environ."""
-    global settings
-    settings = Settings()
+    """Re-read the environment, updating the existing object in place.
+
+    Callers do ``from .config import settings``, which binds the object
+    rather than this name, so rebinding the global would leave every one of
+    them reading the old copy -- a credential supplied at runtime would never
+    reach the tool that needs it. Mutating the instance reaches all holders.
+    """
+    settings.__dict__.update(Settings().__dict__)
     return settings

@@ -246,6 +246,9 @@ class CreateRun(BaseModel):
     parallel: bool = True
     smart_invalidation: bool = True
     max_workers: Optional[int] = None
+    #: Stop and ask for anything unmet rather than letting the step run with
+    #: simulated tool output and report success it did not earn.
+    ask_for_requirements: bool = True
 
 
 class InputSpec(BaseModel):
@@ -697,6 +700,10 @@ async def create_run(body: CreateRun) -> Dict[str, Any]:
         verbose=False,
     )
     _attach_configured_extras(workflow)
+    if body.ask_for_requirements:
+        # After the extras are attached, so tools registered above count as
+        # satisfied rather than being asked about.
+        workflow.ask_for_missing_requirements()
     manager.register(workflow)
     # Only remember answers the person actually confirmed for this plan.
     from orchestrator.recall import remember_all

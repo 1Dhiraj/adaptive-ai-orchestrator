@@ -24,6 +24,7 @@ the moment a re-run reproduces an identical output.
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
@@ -178,6 +179,10 @@ class Workflow:
         self.agents = agent_manager or AgentManager(llm=self.llm)
         self.memory = memory or MemoryManager()
         self.bus = bus or EventBus()
+        #: Input name -> whether answering it should export an environment
+        #: variable. Populated by ask_for_missing_requirements(); a supplied
+        #: credential has to reach os.environ or the tool stays simulated.
+        self._requirement_env: Dict[str, bool] = {}
 
         self.max_workers = max_workers or settings.max_workers
         self.parallel = parallel
@@ -362,6 +367,46 @@ class Workflow:
     def print_requirements(self, width: int = 78) -> None:
         """Show what the task needs and whether it can actually run."""
         self.check_requirements().print_report(width)
+
+    def ask_for_missing_requirements(self, include_simulated: bool = True) -> List[str]:
+        """Turn anything still missing into questions attached to the steps.
+
+        By default an unmet requirement only downgrades a tool to simulated
+        output, so the step "succeeds" having done nothing real. Calling this
+        first converts those into pending inputs, which stops the step at
+        AWAITING_INPUT until a person supplies the value.
+
+        Returns the names asked about. Safe to call repeatedly: a question
+        already attached to a step is not added twice, and requirements that
+        have since been satisfied are dropped.
+        """
+        from .requirements import to_input_requests
+
+        report = self.check_requirements()
+        questions = to_input_requests(report, include_simulated=include_simulated)
+
+        asked: List[str] = []
+        for step_id, requests in questions.items():
+            if step_id not in self.graph:
+                continue
+            step = self.graph.get(step_id)
+            existing = {i.name for i in step.inputs}
+            for request in requests:
+                if request.name in existing:
+                    continue
+                step.inputs.append(request)
+                asked.append(request.name)
+                if request.name not in self._requirement_env:
+                    self._requirement_env[request.name] = request.type.value == "secret"
+
+        if asked:
+            self.bus.publish(
+                EventType.LOG, run_id=self.run_id,
+                message=f"waiting on {len(asked)} unmet requirement(s): "
+                        f"{', '.join(sorted(set(asked)))}")
+            if self.state is not None:
+                self.state.update_run(self.run_id, graph=self.graph)
+        return asked
 
     def enable_coding_team(self, root: Optional[Any] = None) -> List[str]:
         """Give the agents a shared workspace and a terminal.
@@ -1335,6 +1380,19 @@ class Workflow:
             result.input_hash = ""
 
         request = next(i for i in step.inputs if i.name == name)
+
+        # A credential asked for by ask_for_missing_requirements() only
+        # unblocks the tool once it is actually in the environment -- the
+        # tools read os.environ directly in their is_live() checks.
+        if self._requirement_env.get(name) and coerced not in (None, ""):
+            os.environ[name] = str(coerced)
+            # Some tools read os.environ directly, others go through the
+            # settings object built at import; refresh it so both see this.
+            from .config import reload_settings
+
+            reload_settings()
+            self.check_requirements()
+
         self.bus.publish(
             EventType.STEP_INPUT_PROVIDED, run_id=self.run_id, step_id=step_id,
             message=f"{name} = {'***' if request.is_secret else coerced}",

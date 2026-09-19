@@ -444,3 +444,74 @@ def merge_requirements(*groups: List[Requirement]) -> List[Requirement]:
             existing.needed_by = sorted(set(existing.needed_by) | set(req.needed_by))
             existing.optional = existing.optional and req.optional
     return list(merged.values())
+
+
+#: Requirement kinds that a person can satisfy by typing a value. Everything
+#: else needs something installed, so the best we can do is ask them to
+#: confirm once they have done it.
+_TYPEABLE = {RequirementKind.CREDENTIAL}
+
+
+def to_input_requests(
+    report: "RequirementsReport",
+    include_simulated: bool = True,
+) -> Dict[str, List["InputRequest"]]:
+    """Turn unsatisfied requirements into questions, keyed by step id.
+
+    Without this, a missing credential is silently downgraded to simulated
+    output: the step reports success and the work never happens. Feeding
+    these into ``step.inputs`` instead makes the run stop and ask, which is
+    the behaviour an operator expects.
+
+    A credential becomes a secret field, since supplying the value is all it
+    takes. Anything else -- a binary, a package, an MCP server -- cannot be
+    typed in, so it becomes a yes/no confirmation to tick once installed.
+    Requirements with no ``needed_by`` are skipped: there is no step to
+    attach the question to.
+    """
+    from .inputs import InputRequest, InputType
+
+    wanted = {RequirementStatus.MISSING}
+    if include_simulated:
+        wanted.add(RequirementStatus.SIMULATED)
+
+    unmet = [r for r in report.requirements
+             if not r.optional and r.status in wanted and r.needed_by]
+
+    # A tool is only ever simulated *because* of something underneath it. When
+    # that cause is already being asked about for the same step, also asking
+    # "is the tool ready?" is two questions for one fix.
+    covered: set = set()
+    for req in unmet:
+        if req.kind in _TYPEABLE:
+            covered.update(req.needed_by)
+
+    questions: Dict[str, List[InputRequest]] = {}
+    for req in unmet:
+        if req.kind is RequirementKind.TOOL and set(req.needed_by) <= covered:
+            continue
+
+        if req.kind in _TYPEABLE:
+            request = InputRequest(
+                name=req.name,
+                prompt=f"Value for {req.name}",
+                type=InputType.SECRET,
+                required=True,
+                why=req.why or f"{req.name} is needed before this step can do real work",
+            )
+        else:
+            setup = req.setup or f"install or configure '{req.name}'"
+            request = InputRequest(
+                name=f"{req.name}_ready",
+                prompt=f"Have you set up '{req.name}'? ({setup})",
+                type=InputType.BOOLEAN,
+                required=True,
+                why=req.why or f"'{req.name}' is not available yet",
+            )
+
+        # Deliberately the same object for every dependent step: one
+        # credential answered once should unblock everything waiting on it,
+        # not be retyped per step.
+        for step_id in req.needed_by:
+            questions.setdefault(step_id, []).append(request)
+    return questions
