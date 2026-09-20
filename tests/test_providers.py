@@ -128,6 +128,23 @@ class TestAnthropicProvider:
 
 
 class TestOpenAIProvider:
+    @pytest.fixture(autouse=True)
+    def _ignore_ambient_openai_config(self, monkeypatch):
+        """Pin the endpoint and key to their defaults for these tests.
+
+        OpenAIProvider falls back to the settings object for whatever the
+        caller leaves out, and settings are read from the environment at
+        import. A developer pointing .env.local at a compatible gateway --
+        OpenRouter, Azure, a local vLLM -- would otherwise fail the assertion
+        that requests go to api.openai.com, and would stop "no key raises"
+        from raising at all, because a key really is configured.
+        """
+        from orchestrator import llm as llm_module
+
+        monkeypatch.setattr(llm_module.settings, "openai_base_url",
+                            "https://api.openai.com/v1", raising=False)
+        monkeypatch.setattr(llm_module.settings, "openai_api_key", None, raising=False)
+
     def test_generates_and_reports_usage(self, fake_requests):
         fake_requests([OPENAI_OK])
         response = OpenAIProvider(api_key="sk-test").generate("hi")

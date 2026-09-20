@@ -151,6 +151,11 @@ class Settings:
     llm_provider: Optional[str] = field(
         default_factory=lambda: (os.environ.get("LLM_PROVIDER") or "").strip().lower() or None)
 
+    #: Ceiling on completion tokens per call. Gateways that bill against a
+    #: credit limit reserve the model's full context when this is unset, which
+    #: fails a one-line request on a small balance. 0 disables the cap.
+    llm_max_output_tokens: int = field(
+        default_factory=lambda: _int("LLM_MAX_OUTPUT_TOKENS", 4096))
     llm_max_retries: int = field(default_factory=lambda: _int("LLM_MAX_RETRIES", 3))
     llm_timeout_s: float = field(default_factory=lambda: float(os.environ.get("LLM_TIMEOUT_S", 120)))
     #: Force the deterministic offline provider even when a key is present.

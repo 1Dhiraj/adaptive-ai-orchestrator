@@ -401,6 +401,12 @@ class OpenAIProvider(LLMProvider):
         messages.append({"role": "user", "content": _content if _content else prompt})
 
         body: Dict[str, object] = {"model": self.model, "messages": messages}
+        # Without a cap, gateways reserve the model's whole context against the
+        # account: OpenRouter quotes 131072 tokens for a one-line answer and
+        # refuses the call outright when the credit limit is lower. The cap is
+        # a budget, not a quality setting -- raise it for long generations.
+        if settings.llm_max_output_tokens > 0:
+            body["max_tokens"] = settings.llm_max_output_tokens
         if json_mode:
             body["response_format"] = {"type": "json_object"}
 
