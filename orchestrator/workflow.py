@@ -200,8 +200,11 @@ class Workflow:
 
         if isinstance(self.tools.get("computer_use"), ComputerUseTool):
             self.tools.register(ComputerUseTool(self.run_id, tools=self.tools))
+        from .tools.computer_task import ComputerTaskTool
         from .tools.desktop import DesktopTool
 
+        if isinstance(self.tools.get("computer_task"), ComputerTaskTool):
+            self.tools.register(ComputerTaskTool(self.run_id, llm=self.llm))
         if isinstance(self.tools.get("desktop_native"), DesktopTool):
             # Hand it the model so it can find things on screen by description
             # rather than needing coordinates worked out in advance.

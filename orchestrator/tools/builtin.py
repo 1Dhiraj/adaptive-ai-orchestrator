@@ -732,12 +732,13 @@ TOOL_ALIASES = {
 
 def default_tool_manager() -> ToolManager:
     """A ToolManager with every built-in adapter registered."""
+    from .computer_task import ComputerTaskTool
     from .computer_use import ComputerUseTool
     from .desktop import DesktopTool
     from .hermes import HermesDesktopTool
 
     manager = ToolManager([
-        ComputerUseTool(), DesktopTool(),
+        ComputerTaskTool(), ComputerUseTool(), DesktopTool(),
         GitHubTool(), GitHubCLITool(), ArtifactStoreTool(),
         PostgresTool(), PostgresCLITool(), SQLiteLocalTool(),
         CITool(), LocalTestRunnerTool(),

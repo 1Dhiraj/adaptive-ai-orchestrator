@@ -387,6 +387,12 @@ TOOL_CREDENTIALS: Dict[str, List[tuple]] = {
     # Sending needs an account to send *from*, not just an address to send to.
     "gmail": [("GMAIL_ADDRESS", "the Gmail account to send from"),
               ("GMAIL_APP_PASSWORD", "Gmail app password for that account")],
+    # Not a secret either: the loop runs real shell commands, so it stays off
+    # until someone deliberately allows it, and the wizard is where they find
+    # out it exists.
+    "computer_task": [
+        ("ORCHESTRATOR_ALLOW_TERMINAL", "set to 1 to let agents run shell commands"),
+    ],
     # Not secrets, but the wizard is where a person finds out this capability
     # exists and that it is off until they deliberately turn it on and say
     # where it may act. An empty allow-list permits nothing.
