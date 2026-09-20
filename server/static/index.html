@@ -2173,7 +2173,8 @@ function renderAsk(state) {
         ${esc(a.preview)}</div>
       <pre>${esc(a.payload_preview || "")}</pre>
       <div class="row" style="margin-top:.5rem">
-        <button class="primary" data-approve-action="${esc(stepId)}">Approve action</button>
+        <button class="primary" data-approve-action="${esc(stepId)}"
+                data-tool="${esc(a.tool || "")}">Approve action</button>
         <button class="danger" data-reject-action="${esc(stepId)}">Reject</button>
       </div>
     </div>`).join("");
@@ -2183,12 +2184,35 @@ function renderAsk(state) {
   $("#ask").querySelectorAll("[data-submit]").forEach(btn =>
     btn.addEventListener("click", () => submitInputs(btn.dataset.submit, inputs)));
   $("#ask").querySelectorAll("[data-approve-action]").forEach(btn =>
-    btn.addEventListener("click", () =>
-      act(`/api/runs/${runId}/actions/${btn.dataset.approveAction}/approve`)));
+    btn.addEventListener("click", () => approveAction(btn.dataset.approveAction,
+                                                      btn.dataset.tool || "")));
   $("#ask").querySelectorAll("[data-reject-action]").forEach(btn =>
     btn.addEventListener("click", () =>
       act(`/api/runs/${runId}/actions/${btn.dataset.rejectAction}/reject`, {
         method: "POST", body: JSON.stringify({ reason: "rejected from the dashboard" }) })));
+}
+
+// Sending mail is approved against a digest of the exact message, so that
+// what a person read is provably what leaves the machine. A bare POST is
+// refused, which is why this reads the held email back first and echoes its
+// digest -- approving something the server has since changed should fail.
+async function approveAction(stepId, tool) {
+  const path = `/api/runs/${runId}/actions/${stepId}/approve`;
+  if (tool !== "adaptive_email") return act(path);
+
+  try {
+    const email = await api(`/api/runs/${runId}/email/${stepId}`);
+    const to = email.to || email.recipient || "(no recipient)";
+    if (!confirm(`Send this email?\n\nTo: ${to}\nSubject: ${email.subject || "(none)"}\n\n`
+                 + `${(email.body || "").slice(0, 400)}`)) return;
+    return await act(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ approved: true, digest: email.digest }),
+    });
+  } catch (err) {
+    log(`could not approve the email: ${err.message}`, "var(--danger)");
+  }
 }
 
 async function submitInputs(stepId, inputs) {

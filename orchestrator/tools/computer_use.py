@@ -182,11 +182,20 @@ class ComputerUseTool(Tool):
         return None
 
     def _desktop_backend(self) -> Optional[str]:
+        """Hermes first, then native control.
+
+        Hermes is given a whole outcome and works out the steps itself, so
+        when it is installed it is the better instrument. Native control is
+        the fallback that always exists: it needs no second agent and no
+        extra account, at the cost of the caller having to drive it click by
+        click.
+        """
         if self.tools is None:
             return None
-        tool = self.tools.get("hermes_desktop")
-        if tool is not None and not tool.is_broken and tool.is_live():
-            return "hermes_desktop"
+        for candidate in ("hermes_desktop", "desktop_native"):
+            tool = self.tools.get(candidate)
+            if tool is not None and not tool.is_broken and tool.is_live():
+                return candidate
         return None
 
     def backend(self) -> str:

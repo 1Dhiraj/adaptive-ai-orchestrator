@@ -93,17 +93,41 @@ class LLMProvider(ABC):
         system: Optional[str] = None,
         json_mode: bool = False,
         metadata: Optional[Dict[str, str]] = None,
+        images: Optional[List[bytes]] = None,
     ) -> LLMResponse:
         """Generate a completion.
 
         ``metadata`` carries orchestrator-side hints (currently just the
         caller's agent role). Real providers ignore it; the stub uses it so
         its output matches the role without guessing from the prompt text.
+
+        ``images`` are raw PNG bytes, for looking at a screen rather than
+        reading a description of one. A provider that cannot accept them
+        raises rather than answering from the text alone -- a vision loop
+        that silently went blind would invent coordinates and click them.
         """
-        response = self._generate(prompt, system, json_mode, metadata)
+        if images:
+            response = self._generate_with_images(prompt, system, json_mode,
+                                                  metadata, images)
+        else:
+            response = self._generate(prompt, system, json_mode, metadata)
         with self._lock:
             self.total_usage = self.total_usage + response.usage
         return response
+
+    def _generate_with_images(self, prompt: str, system: Optional[str],
+                              json_mode: bool, metadata: Optional[Dict[str, str]],
+                              images: List[bytes]) -> LLMResponse:
+        """Override in providers that accept images. Refuses by default."""
+        raise LLMError(
+            f"provider '{self.name}' ({getattr(self, 'model', '?')}) cannot accept "
+            "images. Use a vision model -- e.g. LLM_PROVIDER=openai with "
+            "OPENAI_BASE_URL=https://openrouter.ai/api/v1 and "
+            "OPENAI_MODEL=minimax/minimax-m3.")
+
+    def supports_images(self) -> bool:
+        """Whether this provider can be given screenshots."""
+        return type(self)._generate_with_images is not LLMProvider._generate_with_images
 
     def reset_usage(self) -> None:
         with self._lock:
@@ -350,12 +374,31 @@ class OpenAIProvider(LLMProvider):
         self.base_url = (base_url or settings.openai_base_url).rstrip("/")
         self.max_retries = settings.llm_max_retries if max_retries is None else max_retries
 
+    def _generate_with_images(self, prompt: str, system: Optional[str],
+                              json_mode: bool, metadata: Optional[Dict[str, str]],
+                              images: List[bytes]) -> LLMResponse:
+        """Same endpoint, with the image parts OpenAI-compatible APIs expect.
+
+        Written against the shared format rather than one vendor's, so the
+        same path serves OpenAI, OpenRouter (minimax, qwen-vl, gemini) and any
+        compatible gateway -- whichever model is configured.
+        """
+        import base64
+
+        parts: List[Dict[str, object]] = [{"type": "text", "text": prompt}]
+        for raw in images:
+            encoded = base64.b64encode(raw).decode("ascii")
+            parts.append({"type": "image_url",
+                          "image_url": {"url": f"data:image/png;base64,{encoded}"}})
+        return self._generate(prompt, system, json_mode, metadata, _content=parts)
+
     def _generate(self, prompt: str, system: Optional[str], json_mode: bool,
-                  metadata: Optional[Dict[str, str]] = None) -> LLMResponse:
+                  metadata: Optional[Dict[str, str]] = None,
+                  _content: Optional[List[Dict[str, object]]] = None) -> LLMResponse:
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
-        messages.append({"role": "user", "content": prompt})
+        messages.append({"role": "user", "content": _content if _content else prompt})
 
         body: Dict[str, object] = {"model": self.model, "messages": messages}
         if json_mode:

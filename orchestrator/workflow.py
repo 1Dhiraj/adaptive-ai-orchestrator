@@ -200,6 +200,12 @@ class Workflow:
 
         if isinstance(self.tools.get("computer_use"), ComputerUseTool):
             self.tools.register(ComputerUseTool(self.run_id, tools=self.tools))
+        from .tools.desktop import DesktopTool
+
+        if isinstance(self.tools.get("desktop_native"), DesktopTool):
+            # Hand it the model so it can find things on screen by description
+            # rather than needing coordinates worked out in advance.
+            self.tools.register(DesktopTool(self.run_id, llm=self.llm))
         from .planner import is_software_task
         if is_software_task(self.description):
             from .tools.workspace import coding_team_tools

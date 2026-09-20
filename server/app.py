@@ -1163,6 +1163,17 @@ def _email_details(workflow: Workflow, step_id: str) -> dict:
     return _email_delivery().status(workflow.run_id, step_id, message)
 
 
+@app.get("/api/runs/{run_id}/email/{step_id}")
+async def email_details(run_id: str, step_id: str) -> dict:
+    """The held email, and the digest that authorises sending exactly it.
+
+    Approval is bound to this digest so that what a person read is what gets
+    sent. Without a way to read it back, the dashboard could never approve an
+    email at all -- the approve endpoint rejects anything unbound.
+    """
+    return _email_details(manager.get(run_id), step_id)
+
+
 @app.post("/api/runs/{run_id}/email/{step_id}/open-browser")
 async def open_gmail_for_email(run_id: str, step_id: str, body: BrowserEmailPermission) -> dict:
     workflow = manager.get(run_id)
