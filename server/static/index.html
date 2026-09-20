@@ -1504,6 +1504,35 @@ const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
 
+// A step's raw output is written for the orchestrator, not for a person: the
+// agent's prose, then a TOOL_DIRECTIVE line, then the tool's own transcript.
+// Showing it verbatim buries the thing the user actually asked for -- ask for
+// a page heading and you get a wall of Playwright JSON with "Example Domain"
+// somewhere inside. Split it so the answer leads and the plumbing folds away.
+function readableOutput(text) {
+  const raw = String(text ?? "");
+  if (!raw.trim()) return { answer: "", detail: "" };
+
+  // Anything the agent said before the directive is its actual answer.
+  const prose = raw.split(/^TOOL_DIRECTIVE:/m)[0].trim();
+
+  let toolPart = "";
+  const tool = raw.match(/\n---\nTool `[^`]+`:\s*([\s\S]*)$/);
+  if (tool) {
+    toolPart = tool[1].trim();
+    // MCP transcripts put the value under "### Result"; the rest is the code
+    // it ran and a snapshot path, which nobody reads unless debugging. A
+    // navigation has no result, so fall back to "### Page", where the URL and
+    // title are the only things worth reporting.
+    const section = toolPart.match(/###\s*Result\s*\n([\s\S]*?)(?=\n###|\n```|$)/)
+                 || toolPart.match(/###\s*Page\s*\n([\s\S]*?)(?=\n###|\n```|$)/);
+    if (section) toolPart = section[1].trim();
+  }
+
+  const answer = [prose, toolPart].filter(Boolean).join("\n\n").trim();
+  return { answer: answer || raw, detail: raw };
+}
+
 async function api(path, options = {}, retryAuth = true) {
   const { headers: extraHeaders = {}, ...requestOptions } = options;
   const response = await fetch(path, {
@@ -1695,7 +1724,16 @@ function renderSteps(state) {
           ${approve}
         </div>
         <div id="editor-${esc(step.id)}"></div>
-        <pre>${esc(r.error || r.output || "(no output yet)")}</pre>
+        ${(() => {
+          if (r.error) return `<pre>${esc(r.error)}</pre>`;
+          const { answer, detail } = readableOutput(r.output);
+          if (!answer) return `<pre>(no output yet)</pre>`;
+          const plumbing = detail && detail.trim() !== answer.trim()
+            ? `<details class="raw"><summary>Full tool transcript</summary>
+                 <pre>${esc(detail)}</pre></details>`
+            : "";
+          return `<pre>${esc(answer)}</pre>${plumbing}`;
+        })()}
       </div></details>`;
   }).join("");
 
