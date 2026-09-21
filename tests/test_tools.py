@@ -95,14 +95,26 @@ class TestReporting:
 class TestTerminalFallbacks:
     """Each capability chain must end in something that always works."""
 
-    def test_artifact_store_writes_a_file(self, tmp_path, monkeypatch):
-        import orchestrator.tools.builtin as builtin
-
-        monkeypatch.setattr(builtin, "ARTIFACT_DIR", tmp_path)
-        monkeypatch.setattr(builtin, "PROJECT_ROOT", tmp_path.parent)
-        result = ArtifactStoreTool().execute("some output", {"step_id": "backend"})
+    def test_artifact_store_writes_a_file(self, tmp_path):
+        result = ArtifactStoreTool("run-1", root=tmp_path).execute(
+            "some output", {"step_id": "backend"})
         assert "artifact_store" in result
-        assert list(tmp_path.glob("backend-*.md"))
+        assert list((tmp_path / "run-1" / "artifacts").glob("backend-*.md"))
+
+    def test_artifact_store_honours_safe_path_and_content(self, tmp_path):
+        payload = ('ignored body\nTOOL_DIRECTIVE: {"arguments": '
+                   '{"path":"artifacts/report.txt","content":"actual report"}}')
+        result = ArtifactStoreTool("run-2", root=tmp_path).execute(
+            payload, {"step_id": "store"})
+        report = tmp_path / "run-2" / "artifacts" / "report.txt"
+        assert report.read_text(encoding="utf-8") == "actual report"
+        assert "artifacts\\report.txt" in result or "artifacts/report.txt" in result
+
+    def test_artifact_store_rejects_parent_traversal(self, tmp_path):
+        payload = ('TOOL_DIRECTIVE: {"arguments": '
+                   '{"path":"artifacts/../escape.txt","content":"no"}}')
+        with pytest.raises(ToolError, match="inside artifacts"):
+            ArtifactStoreTool("run-3", root=tmp_path).execute(payload)
 
     def test_sqlite_local_applies_real_sql(self, tmp_path):
         tool = SQLiteLocalTool(db_path=str(tmp_path / "scratch.sqlite3"))

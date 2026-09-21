@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -155,6 +156,110 @@ class TestBasics:
         response = client.get("/")
         assert response.status_code == 200
         assert "Adaptive AI Task Orchestrator" in response.text
+        assert 'id="artifact-viewer"' in response.text
+        assert "viewWorkspaceFile" in response.text
+        assert "Stored at workspace/" in response.text
+        assert "Task chat" in response.text
+        assert "renderTaskSetupQuestions" in response.text
+        assert "Open Gmail" in response.text
+        assert "Prepare Gmail draft" in response.text
+        assert "const message = email.message" in response.text
+        assert 'id="change-requirement-dialog"' in response.text
+        assert "openRequirementChange" in response.text
+        assert "window.prompt" not in response.text
+        assert "prompt(" not in response.text
+        assert 'id="confirmation-dialog"' in response.text
+        assert "requestConfirmation" in response.text
+        assert "window.confirm" not in response.text
+        assert "confirm(" not in response.text
+        assert 'id="btn-delete-task"' in response.text
+        assert "Delete this task?" in response.text
+        assert 'method: "DELETE"' in response.text
+
+    def test_invalid_ai_plan_returns_retryable_error_without_creating_run(
+            self, client, monkeypatch):
+        import server.app as server_app
+        from orchestrator.planner import PlanningError
+
+        def fail_planning(*args, **kwargs):
+            raise PlanningError("The AI planner did not return a valid task plan")
+
+        before = len(client.get("/api/runs").json())
+        monkeypatch.setattr(server_app.Workflow, "from_description", fail_planning)
+        response = client.post("/api/runs", json={"description": "Build a CLI"})
+
+        assert response.status_code == 502
+        assert "AI planner" in response.json()["detail"]
+        assert len(client.get("/api/runs").json()) == before
+
+    def test_playwright_unsafe_code_tool_is_available_for_browser_email(self):
+        import server.app as server_app
+
+        class RawTool:
+            name = "browser_run_code_unsafe"
+
+        class WrappedTool:
+            name = "web_browser_run_code_unsafe"
+            _mcp_tool = RawTool()
+
+        tool = WrappedTool()
+        assert server_app._find_browser_code_tool([tool]) is tool
+
+    def test_browser_email_failure_is_a_recoverable_conflict(self, client, monkeypatch):
+        import server.app as server_app
+        from orchestrator.tools.base import ToolError
+
+        digest = "a" * 64
+        workflow = object()
+        monkeypatch.setattr(server_app.manager, "get", lambda run_id: workflow)
+        monkeypatch.setattr(server_app, "_email_details", lambda current, step_id: {
+            "digest": digest, "message": {
+                "to": "friend@example.com", "subject": "Hello", "body": "Hi",
+            },
+        })
+
+        class BrokenBrowser:
+            def open_browser(self, *args, **kwargs):
+                raise ToolError("Gmail browser connection was lost; nothing was sent")
+
+        monkeypatch.setattr(server_app, "_email_delivery", lambda: BrokenBrowser())
+        response = client.post("/api/runs/mail/email/send/open-browser", json={
+            "approved": True, "digest": digest,
+        })
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "Gmail browser connection was lost; nothing was sent"
+
+    def test_already_sent_email_can_finish_without_sending_again(self, client, monkeypatch):
+        import server.app as server_app
+
+        approved = []
+        digest = "b" * 64
+
+        class WorkflowStub:
+            def pending_actions(self):
+                return {"send": SimpleNamespace(tool="adaptive_email")}
+
+            def approve_action(self, step_id):
+                approved.append(step_id)
+
+        monkeypatch.setattr(server_app.manager, "get", lambda run_id: WorkflowStub())
+        monkeypatch.setattr(server_app.manager, "launch", lambda *args, **kwargs: None)
+        monkeypatch.setattr(server_app, "_email_details", lambda workflow, step_id: {
+            "browser_available": True,
+            "method": "browser",
+            "status": "sent",
+            "digest": digest,
+            "reviewed_digest": digest,
+            "api_available": False,
+        })
+
+        response = client.post("/api/runs/mail/actions/send/approve", json={
+            "approved": True, "digest": digest,
+        })
+
+        assert response.status_code == 200
+        assert approved == ["send"]
 
     def test_tools_are_listed(self, client):
         names = {tool["name"] for tool in client.get("/api/tools").json()}
@@ -230,6 +335,26 @@ class TestRunLifecycle:
         assert downloaded.status_code == 200
         assert downloaded.content == b"print(42)"
         assert client.get(f"/api/runs/{run_id}/files/../.env.local").status_code in {400, 404}
+
+    def test_artifact_store_files_are_visible_and_downloadable(self, client):
+        run_id = client.post("/api/runs/from-steps", json={
+            "run_id": "artifact-files",
+            "steps": [{"id": "report", "description": "Write a report",
+                       "agent_role": "writer", "requires_tool": "artifact_store"}],
+        }).json()["run_id"]
+        workflow = __import__("server.app", fromlist=["manager"]).manager.get(run_id)
+        workflow.tools.get("artifact_store").execute(
+            "report body", {"step_id": "report"})
+
+        listed = client.get(f"/api/runs/{run_id}/files")
+        assert listed.status_code == 200
+        artifacts = [entry for entry in listed.json()
+                     if entry["path"].startswith("artifacts/report-")]
+        assert artifacts
+        artifact = artifacts[-1]
+        downloaded = client.get(f"/api/runs/{run_id}/files/{artifact['path']}")
+        assert downloaded.status_code == 200
+        assert downloaded.content == b"report body"
 
     def test_recurring_schedule_can_be_created_paused_and_deleted(self, client):
         run_id = client.post(

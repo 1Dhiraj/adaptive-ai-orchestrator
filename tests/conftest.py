@@ -34,6 +34,18 @@ def no_developer_mcp_config(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_ambient_terminal_permission(monkeypatch):
+    """Tests opt into real shell execution explicitly.
+
+    A developer may enable the restricted terminal in ``.env.local`` for the
+    dashboard. CLI and workflow tests must not inherit that setting or they
+    unexpectedly stop for irreversible-action approval (and could execute
+    commands against their temporary workspaces).
+    """
+    monkeypatch.delenv("ORCHESTRATOR_ALLOW_TERMINAL", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def stub_llm():
     """Force the offline provider for every test, and reset it afterwards."""
     provider = StubProvider()

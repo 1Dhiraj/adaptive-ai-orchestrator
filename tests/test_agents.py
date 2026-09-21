@@ -74,6 +74,7 @@ class TestAgent:
         assert outcome.tool_invocation is not None
         assert "Tool `github`" in outcome.output
         assert outcome.output.startswith("[backend]")  # the agent's own work survives
+        assert "TOOL_DIRECTIVE" not in outcome.output
 
     def test_fallback_is_labelled_in_the_output(self, stub_llm):
         tools = default_tool_manager()
@@ -163,6 +164,17 @@ class TestMemory:
     def test_missing_dependency_is_marked(self):
         step = Step(id="c", description="x", agent_role="generic", depends_on=["a"])
         assert "not yet produced" in MemoryManager().build_context(step)
+
+    def test_context_budget_can_be_expanded_for_exact_artifacts(self):
+        memory = MemoryManager(char_budget=20)
+        original = "complete report " * 40
+        memory.store("writer", original)
+        step = Step(id="store", description="archive", agent_role="writer",
+                    depends_on=["writer"], requires_tool="artifact_store")
+        ordinary = memory.build_context(step)
+        expanded = memory.build_context(step, char_budget=2000)
+        assert "chars elided" in ordinary
+        assert original in expanded
 
     def test_input_hash_changes_with_upstream_output(self):
         memory = MemoryManager()

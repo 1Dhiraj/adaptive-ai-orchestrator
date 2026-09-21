@@ -69,7 +69,8 @@ class MemoryManager:
         with self._lock:
             return {dep: self._outputs.get(dep, "") for dep in step.depends_on}
 
-    def build_context(self, step: Step, graph: Optional[DependencyGraph] = None) -> str:
+    def build_context(self, step: Step, graph: Optional[DependencyGraph] = None,
+                      char_budget: Optional[int] = None) -> str:
         """Render the prerequisite outputs as a prompt-ready block."""
         if not step.depends_on:
             return "(this step has no prerequisites)"
@@ -81,7 +82,8 @@ class MemoryManager:
             if graph is not None and dep in graph:
                 upstream = graph.get(dep)
                 label = f"{dep} ({upstream.agent_role})"
-            body = truncate(output, self.char_budget) if output else "(not yet produced)"
+            budget = char_budget or self.char_budget
+            body = truncate(output, budget) if output else "(not yet produced)"
             blocks.append(f"### Output of `{label}`\n{body}")
         return "\n\n".join(blocks)
 

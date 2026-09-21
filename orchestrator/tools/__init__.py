@@ -1,6 +1,7 @@
 """Tool ecosystem: adapters, capability-based fallback routing."""
 
 from .base import (
+    ActionReviewRequiredError,
     SimulatedTool,
     Tool,
     ToolError,
@@ -31,6 +32,7 @@ from .hermes import HermesDesktopTool
 
 __all__ = [
     "Tool", "SimulatedTool", "ToolManager", "ToolError", "ToolUnavailableError",
+    "ActionReviewRequiredError",
     "ToolInvocation", "default_tool_manager", "canonical_tool_name", "TOOL_ALIASES",
     "GitHubTool", "GitHubCLITool", "ArtifactStoreTool",
     "PostgresTool", "PostgresCLITool", "SQLiteLocalTool",

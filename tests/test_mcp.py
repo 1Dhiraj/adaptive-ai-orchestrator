@@ -223,6 +223,22 @@ class TestConfigLoading:
         assert len(specs) == 1
         assert specs[0].transport == "stdio" and specs[0].command == sys.executable
 
+    def test_server_timeouts_are_parsed(self, tmp_path):
+        config = tmp_path / ".mcp.json"
+        config.write_text(json.dumps({"mcpServers": {
+            "fake": {
+                "command": sys.executable,
+                "args": [FAKE_SERVER],
+                "connect_timeout_s": 60,
+                "call_timeout_s": 90,
+            },
+        }}), encoding="utf-8")
+
+        spec = load_mcp_config(str(config))[0]
+
+        assert spec.connect_timeout_s == 60
+        assert spec.call_timeout_s == 90
+
     def test_url_server_defaults_to_streamable_http(self, tmp_path):
         config = tmp_path / ".mcp.json"
         config.write_text(json.dumps({"mcpServers": {

@@ -1,7 +1,6 @@
 # Secrets
-.env
-.env.local
-.env*.backup
+.env*
+!.env.example
 # MCP server configs often carry tokens; the .example is committed instead.
 .mcp.json
 mcp_demo.json
@@ -19,6 +18,15 @@ dashboard.html
 results.json
 results.csv
 workspace/
+capabilities/
+output/
+.codex-finalizer/
+.ppt-build/
+
+# Local research/paper work is kept out of software releases. Files already
+# tracked historically are unaffected; new generated paper material stays local.
+paper/
+experiments/change_aware/*paper*
 
 # Research source PDFs are retained locally but are not redistributed by the
 # software repository. Generated review/paper versions can be attached to a

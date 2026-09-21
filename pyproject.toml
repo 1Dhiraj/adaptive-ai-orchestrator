@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "adaptive-ai-orchestrator"
-version = "1.0.0"
+version = "1.1.0"
 description = "Multi-agent AI task orchestrator with adaptive re-execution, tool fallback and built-in observability"
 readme = "README.md"
 requires-python = ">=3.10"

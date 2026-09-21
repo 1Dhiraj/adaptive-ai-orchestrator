@@ -15,6 +15,7 @@ import orchestrator.llm as llm
 from orchestrator.llm import (
     AnthropicProvider,
     LLMError,
+    NvidiaProvider,
     OllamaProvider,
     OpenAIProvider,
     build_provider,
@@ -175,6 +176,25 @@ class TestOpenAIProvider:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         with pytest.raises(LLMError, match="OPENAI_API_KEY"):
             OpenAIProvider()
+
+
+class TestNvidiaProvider:
+    def test_json_mode_forces_nonempty_content_and_disables_thinking(self, fake_requests):
+        fake = fake_requests([OPENAI_OK])
+        NvidiaProvider(api_key="nvapi-test").generate("plan", json_mode=True)
+        body = fake.calls[0]["json"]
+        assert body["response_format"] == {"type": "json_object"}
+        assert body["chat_template_kwargs"] == {
+            "force_nonempty_content": True,
+            "enable_thinking": False,
+        }
+
+    def test_normal_chat_keeps_thinking_default(self, fake_requests):
+        fake = fake_requests([OPENAI_OK])
+        NvidiaProvider(api_key="nvapi-test").generate("hello")
+        assert fake.calls[0]["json"]["chat_template_kwargs"] == {
+            "force_nonempty_content": True,
+        }
 
 
 class TestOllamaProvider:

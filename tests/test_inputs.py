@@ -384,6 +384,35 @@ class TestIrreversibleActionApproval:
         assert report.failed == ["send"]
         assert "gateway rejected" in workflow.results["send"].error
 
+        # Approval is single-use even when the side effect fails. Resuming
+        # must generate a new held action, never retry it automatically.
+        second = workflow.resume()
+        assert second.awaiting_action == ["send"]
+        assert workflow.status_of("send") is StepStatus.AWAITING_ACTION
+
+    def test_safe_preflight_failure_keeps_frozen_action_for_reapproval(self, make_workflow):
+        from orchestrator.tools.base import ActionReviewRequiredError
+
+        class NeedsReview(LiveIrreversibleTool):
+            name = "send_it"
+
+            def _run(self, task, context=None):
+                raise ActionReviewRequiredError("draft no longer matches; nothing was sent")
+
+        workflow = make_workflow(
+            [Step(id="send", description="Send it.", agent_role="devops",
+                  requires_tool="send_it", max_retries=0)],
+            tool_manager=ToolManager([NeedsReview()]))
+        workflow.run_full()
+        original_payload = workflow.pending_actions()["send"].payload
+        workflow.approve_action("send")
+
+        report = workflow.resume()
+
+        assert report.awaiting_action == ["send"]
+        assert workflow.status_of("send") is StepStatus.AWAITING_ACTION
+        assert workflow.pending_actions()["send"].payload == original_payload
+
 
 class TestCombinedFlow:
     def test_input_then_action_then_done(self, make_workflow):

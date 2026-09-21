@@ -14,16 +14,45 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from .base import Tool, ToolError
-from .builtin import EmailTool, GmailTool, _directive
+from .base import ActionReviewRequiredError, Tool, ToolError
+from .builtin import EmailTool, GmailTool
 
 
 def email_message(payload: str, context: dict | None = None) -> dict:
-    directive = _directive(payload)
+    # Agents occasionally emit both the legacy flat directive and the newer
+    # {"arguments": ...} form.  Parse each directive line independently and
+    # use the last valid one; the shared greedy parser cannot represent two
+    # adjacent JSON objects and previously fell back to "Project update".
+    directive: dict = {}
+    directive_line: int | None = None
+    lines = (payload or "").splitlines()
+    for line_number, line in enumerate(lines):
+        if not line.lstrip().startswith("TOOL_DIRECTIVE:"):
+            continue
+        try:
+            candidate = json.loads(line.split("TOOL_DIRECTIVE:", 1)[1].strip())
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(candidate, dict):
+            nested = candidate.get("arguments")
+            directive = nested if isinstance(nested, dict) else candidate
+            directive_line = line_number
     values = (context or {}).get("inputs") or {}
     recipient = str(values.get("recipient") or values.get("to") or directive.get("to") or "").strip()
     subject = str(values.get("subject") or directive.get("subject") or "Project update").strip()
-    body = payload.split("TOOL_DIRECTIVE:", 1)[0].strip()
+    explicit_body = values.get("body") or values.get("email_body") or directive.get("body")
+    if explicit_body is not None:
+        body = str(explicit_body).strip()
+    else:
+        # Use content before the *last valid* directive.  A reasoning trace can
+        # mention TOOL_DIRECTIVE verbatim, so splitting on its first occurrence
+        # truncates the actual message and can leak model reasoning into Gmail.
+        body = "\n".join(lines[:directive_line] if directive_line is not None else lines).strip()
+        if "</think>" in body:
+            body = body.rsplit("</think>", 1)[1].strip()
+        body = re.sub(r"(?is)<think>.*?</think>", "", body).strip()
+    # ASSUMPTIONS is model-to-orchestrator metadata, never message content.
+    body = re.sub(r"(?m)^ASSUMPTIONS:\s*.*(?:\r?\n)?", "", body).strip()
     if not re.fullmatch(r"[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+", recipient):
         raise ToolError("Provide one valid recipient before sending")
     if any(c in subject for c in "\r\n") or not body or len(body) > 8000 or len(subject) > 200:
@@ -65,7 +94,12 @@ class EmailDelivery:
     def status(self, run_id: str, step_id: str, message: dict) -> dict:
         record = self.read(run_id, step_id)
         api = self.api_tool()
-        return {**record, "message": message, "digest": message_digest(message),
+        digest = message_digest(message)
+        reviewed_digest = record.get("digest")
+        stale = bool(reviewed_digest and reviewed_digest != digest)
+        effective_status = "choose_method" if stale else record.get("status", "choose_method")
+        return {**record, "status": effective_status, "message": message, "digest": digest,
+                "reviewed_digest": reviewed_digest, "stale_draft": stale,
                 "api_available": api is not None, "api_name": api.name if api else None,
                 "browser_available": self.browser_tool is not None}
 
@@ -140,6 +174,8 @@ class EmailDelivery:
             if record["status"] in {"sending", "sent", "delivery_unknown"}:
                 raise ToolError("Delivery may already have happened. Check Sent mail; automatic retry is blocked.")
             use_browser = record.get("method") == "browser"
+            if self.browser_tool is not None and not use_browser:
+                raise ToolError("Open Gmail and prepare the reviewed browser draft before sending")
             if use_browser:
                 if record["status"] != "draft_ready" or record.get("digest") != digest:
                     raise ToolError("Prepare and review the current Gmail draft before sending")
@@ -154,7 +190,10 @@ class EmailDelivery:
                     if result["status"] == "draft_changed":
                         record["status"] = "draft_ready"
                         self.write(run_id, step_id, record)
-                        raise ToolError("Gmail draft changed or could not be verified. Nothing was sent; restore the reviewed draft.")
+                        reason = str(result.get("reason") or "the reviewed fields did not match")
+                        raise ActionReviewRequiredError(
+                            f"Gmail draft changed or could not be verified ({reason}). "
+                            "Nothing was sent; restore the reviewed draft.")
                     if result["status"] != "sent":
                         raise ToolError("Gmail did not confirm delivery. Check Sent mail before doing anything else.")
                 else:
@@ -177,17 +216,42 @@ class EmailDelivery:
         # Never trust model claims or a stale saved draft as delivery evidence.
         return self._browser(r'''async (page) => {
           const expected = ''' + json.dumps(message) + r''';
-          if (!page.url().startsWith('https://mail.google.com/mail/')) return {status:'draft_changed'};
+          if (!page.url().startsWith('https://mail.google.com/mail/')) return {status:'draft_changed', reason:'Gmail is not the active page'};
           const dialog = page.locator('div[role="dialog"]').filter({has:page.locator('input[name="subjectbox"]')});
-          if (await dialog.count() !== 1) return {status:'draft_changed'};
-          const recipients = await dialog.locator('[email]').evaluateAll(els => [...new Set(els.map(e => e.getAttribute('email')).filter(Boolean))]);
+          const dialogCount = await dialog.count();
+          if (dialogCount !== 1) return {status:'draft_changed', reason:`expected one compose window, found ${dialogCount}`};
+          const chipRecipients = await dialog.locator('[email], [data-hovercard-id]').evaluateAll(els => els.map(e => e.getAttribute('email') || e.getAttribute('data-hovercard-id')).filter(v => v && v.includes('@')));
+          const typedRecipients = await dialog.locator('input[name="to"],input[aria-label="To recipients"]').evaluateAll(els => els.flatMap(e => e.value.split(/[,;]/)).map(v => v.trim()).filter(v => v.includes('@')));
+          const recipients = [...new Set([...chipRecipients, ...typedRecipients].map(v => v.toLowerCase()))];
           const subject = await dialog.locator('input[name="subjectbox"]').inputValue();
           const body = await dialog.locator('[contenteditable="true"][role="textbox"]').innerText();
-          const extra = await dialog.locator('input[name="cc"],input[name="bcc"],input[name="to"]').evaluateAll(els => els.some(e => e.value.trim()));
+          const extra = await dialog.locator('input[name="cc"],input[name="bcc"]').evaluateAll(els => els.some(e => e.value.trim()));
           const attachments = await dialog.locator('[download_url], [aria-label^="Remove attachment"]').count();
-          if (recipients.length !== 1 || recipients[0].toLowerCase() !== expected.to.toLowerCase() || subject !== expected.subject || body.replace(/\r\n/g,'\n').trim() !== expected.body.replace(/\r\n/g,'\n').trim() || extra || attachments) return {status:'draft_changed'};
-          const send = dialog.getByRole('button', {name:/^Send(?: \(|$)/});
-          if (await send.count() !== 1) return {status:'draft_changed'};
+          const mismatches = [];
+          if (recipients.length !== 1 || recipients[0] !== expected.to.toLowerCase()) mismatches.push('recipient mismatch');
+          if (subject !== expected.subject) mismatches.push('subject mismatch');
+          if (body.replace(/\r\n/g,'\n').trim() !== expected.body.replace(/\r\n/g,'\n').trim()) mismatches.push('body mismatch');
+          if (extra) mismatches.push('CC or BCC is not empty');
+          if (attachments) mismatches.push('unexpected attachment');
+          if (mismatches.length) return {status:'draft_changed', reason:mismatches.join(', ')};
+          // Gmail renders Send as a div[role=button]. Its accessible label can
+          // contain invisible bidi characters around the keyboard shortcut,
+          // which makes a strict getByRole name regex incorrectly miss it.
+          const buttons = dialog.locator('[role="button"]');
+          const sendMatches = [];
+          for (let i = 0; i < await buttons.count(); i++) {
+            const button = buttons.nth(i);
+            if (!await button.isVisible()) continue;
+            const text = (await button.innerText().catch(() => '')).trim();
+            const label = ((await button.getAttribute('aria-label')) ||
+                           (await button.getAttribute('data-tooltip')) || '').trim();
+            if (text === 'Send' || (/^Send(?:\s|[()\u202a-\u202e]|$)/.test(label) &&
+                                    !/(?:option|schedule)/i.test(label))) {
+              sendMatches.push(button);
+            }
+          }
+          if (sendMatches.length !== 1) return {status:'draft_changed', reason:`expected one Send button, found ${sendMatches.length}`};
+          const send = sendMatches[0];
           await send.click();
           try { await page.getByText('Message sent', {exact:true}).waitFor({timeout:10000}); }
           catch (_) { return {status:'delivery_unknown'}; }
@@ -198,7 +262,7 @@ class EmailDelivery:
 class AdaptiveEmailTool(Tool):
     name = "adaptive_email"
     capability = "reviewed_email_delivery"
-    description = "Draft and send email using a configured API, or Gmail browser with permission. Never simulates delivery."
+    description = "Draft and send email in Gmail's browser UI, with a configured API only as fallback. Never simulates delivery."
     side_effect = True
     irreversible = True
     require_approval = True
@@ -211,12 +275,13 @@ class AdaptiveEmailTool(Tool):
         return self.delivery.api_tool() is not None or self.delivery.browser_tool is not None
 
     def prompt_hint(self) -> str:
-        return ('Write only the email body, then TOOL_DIRECTIVE: {"to":"recipient@example.com","subject":"Subject"}. '
+        return ('Return one TOOL_DIRECTIVE JSON line with arguments containing exactly "to", "subject", and "body", '
+                'for example TOOL_DIRECTIVE: {"arguments":{"to":"recipient@example.com","subject":"Subject","body":"Email text"}}. '
                 'Use the recipient supplied by the person. Do not ask for API keys: delivery setup and browser permission happen after drafting. Do not claim the email was sent.')
 
     def preview(self, task: str, context: dict | None = None) -> str:
         message = email_message(task, context)
-        return f"Send '{message['subject']}' to {message['to']} — choose a delivery method and review before sending"
+        return f"Compose '{message['subject']}' to {message['to']} in Gmail, then review it before sending"
 
     def _run(self, task: str, context: dict | None = None) -> str:
         step_id = (context or {}).get("step_id", "email")

@@ -40,6 +40,7 @@ from orchestrator.tenancy import tenant_scope
 from orchestrator.tenancy import current_tenant
 from orchestrator.acquisition import AcquisitionError, CapabilityAcquirer, search_terms
 from orchestrator.tools.adaptive_email import AdaptiveEmailTool, EmailDelivery, email_message, message_digest
+from orchestrator.tools.base import ToolError
 
 STATIC_DIR = Path(__file__).parent / "static"
 EXPORT_DIR = Path(__file__).resolve().parent.parent / "artifacts"
@@ -70,9 +71,29 @@ def _email_delivery() -> EmailDelivery:
         # another tenant. Browser email is limited to the local workspace.
         local = current_tenant() == "default" and not any(os.environ.get(name) for name in (
             "ORCHESTRATOR_API_KEY", "ORCHESTRATOR_API_KEYS", "OIDC_ISSUER"))
-        service.browser_tool = next((tool for tool in [*_shared_mcp_tools, *_capabilities().connected_tools()]
-                                     if getattr(getattr(tool, "_mcp_tool", None), "name", "") == "browser_run_code"), None) if local else None
+        service.browser_tool = _find_browser_code_tool(
+            [*_shared_mcp_tools, *_capabilities().connected_tools()]
+        ) if local else None
         return service
+
+
+def _find_browser_code_tool(tools: List[Any]) -> Any:
+    """Return the Playwright code tool across old/new MCP naming variants.
+
+    Recent Playwright MCP releases renamed the raw tool to
+    ``browser_run_code_unsafe``.  The configured ``web_`` prefix only changes
+    the orchestrator-facing name.  Requiring the old raw name made Gmail look
+    unavailable even while the browser tools were connected and healthy.
+    """
+    accepted = {
+        "browser_run_code", "browser_run_code_unsafe",
+        "web_browser_run_code", "web_browser_run_code_unsafe",
+    }
+    for tool in tools:
+        raw_name = getattr(getattr(tool, "_mcp_tool", None), "name", "")
+        if raw_name in accepted or getattr(tool, "name", "") in accepted:
+            return tool
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -837,18 +858,25 @@ async def clarify_task(body: ClarifyTask) -> Dict[str, Any]:
 @app.post("/api/runs", status_code=201)
 async def create_run(body: CreateRun) -> Dict[str, Any]:
     tools = await asyncio.to_thread(_planning_tools)
-    workflow = await asyncio.to_thread(
-        Workflow.from_description,
-        body.description,
-        run_id=body.run_id,
-        clarifications=body.clarifications,
-        parallel=body.parallel,
-        smart_invalidation=body.smart_invalidation,
-        max_workers=body.max_workers,
-        state=manager.state,
-        verbose=False,
-        tool_manager=tools,
-    )
+    try:
+        workflow = await asyncio.to_thread(
+            Workflow.from_description,
+            body.description,
+            run_id=body.run_id,
+            clarifications=body.clarifications,
+            parallel=body.parallel,
+            smart_invalidation=body.smart_invalidation,
+            max_workers=body.max_workers,
+            state=manager.state,
+            verbose=False,
+            tool_manager=tools,
+        )
+    except Exception as exc:
+        from orchestrator.planner import PlanningError
+
+        if isinstance(exc, PlanningError):
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise
     _attach_configured_extras(workflow)
     if body.ask_for_requirements:
         # After the extras are attached, so tools registered above count as
@@ -1139,12 +1167,17 @@ async def approve_action(run_id: str, step_id: str, resume: bool = True,
         details = _email_details(workflow, step_id)
         if not body or not body.approved or body.digest != details["digest"]:
             raise HTTPException(status_code=400, detail="Review and approve the exact email before sending")
-        if details.get("method") == "browser":
-            ready = details["status"] == "draft_ready"
+        # On a local dashboard, browser delivery is the normal path.  Do not
+        # silently fall back to SMTP/API merely because credentials exist: the
+        # person explicitly reviews the real Gmail draft before Send is armed.
+        if details["browser_available"]:
+            ready = (details.get("method") == "browser"
+                     and details["status"] in {"draft_ready", "sent"}
+                     and details.get("reviewed_digest") == details["digest"])
         else:
             ready = details["api_available"]
         if not ready:
-            raise HTTPException(status_code=409, detail="Configure email credentials or prepare a Gmail browser draft first")
+            raise HTTPException(status_code=409, detail="Open Gmail and prepare the reviewed browser draft first")
     try:
         workflow.approve_action(step_id)
     except KeyError as exc:
@@ -1182,7 +1215,12 @@ async def open_gmail_for_email(run_id: str, step_id: str, body: BrowserEmailPerm
         raise HTTPException(status_code=400, detail="Approve browser access for this email first")
     if manager.busy.get(run_id):
         raise HTTPException(status_code=409, detail="Wait until the task pauses before opening Gmail")
-    result = await asyncio.to_thread(_email_delivery().open_browser, run_id, step_id, details["message"], body.approved)
+    try:
+        result = await asyncio.to_thread(
+            _email_delivery().open_browser, run_id, step_id,
+            details["message"], body.approved)
+    except ToolError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return result
 
 
@@ -1190,7 +1228,12 @@ async def open_gmail_for_email(run_id: str, step_id: str, body: BrowserEmailPerm
 async def prepare_gmail_draft(run_id: str, step_id: str) -> dict:
     workflow = manager.get(run_id)
     details = _email_details(workflow, step_id)
-    return await asyncio.to_thread(_email_delivery().prepare_browser, run_id, step_id, details["message"])
+    try:
+        return await asyncio.to_thread(
+            _email_delivery().prepare_browser, run_id, step_id,
+            details["message"])
+    except ToolError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.post("/api/runs/{run_id}/actions/{step_id}/reject")
@@ -1361,13 +1404,20 @@ async def export_run(run_id: str, format: str = "json") -> Any:
     return FileResponse(path, media_type=media, filename=path.name)
 
 
+def _run_workspace(workflow: Workflow) -> Optional[Path]:
+    """Return the shared per-run workspace exposed by built-in file tools."""
+    for name in ("workspace", "artifact_store", "computer_use", "computer_task"):
+        root = getattr(workflow.tools.get(name), "workspace", None)
+        if root is not None:
+            return Path(root).resolve()
+    return None
+
+
 def _workspace_files(workflow: Workflow) -> List[Dict[str, Any]]:
-    """List files produced inside this run's confined coding workspace."""
-    tool = workflow.tools.get("workspace")
-    root = getattr(tool, "workspace", None)
+    """List files produced inside this run's confined workspace."""
+    root = _run_workspace(workflow)
     if root is None or not Path(root).is_dir():
         return []
-    root = Path(root).resolve()
     files = []
     for path in sorted(p for p in root.rglob("*") if p.is_file()):
         files.append({
@@ -1385,11 +1435,9 @@ async def list_run_files(run_id: str) -> List[Dict[str, Any]]:
 @app.get("/api/runs/{run_id}/files/{relative_path:path}")
 async def download_run_file(run_id: str, relative_path: str) -> Any:
     workflow = manager.get(run_id)
-    tool = workflow.tools.get("workspace")
-    root = getattr(tool, "workspace", None)
+    root = _run_workspace(workflow)
     if root is None:
-        raise HTTPException(status_code=404, detail="this workflow has no coding workspace")
-    root = Path(root).resolve()
+        raise HTTPException(status_code=404, detail="this workflow has no workspace")
     target = (root / relative_path).resolve()
     if target != root and root not in target.parents:
         raise HTTPException(status_code=400, detail="file path leaves the workflow workspace")

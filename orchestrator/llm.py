@@ -409,6 +409,7 @@ class OpenAIProvider(LLMProvider):
             body["max_tokens"] = settings.llm_max_output_tokens
         if json_mode:
             body["response_format"] = {"type": "json_object"}
+        body.update(self._provider_request_options(json_mode))
 
         started = time.time()
         data = _post_json(
@@ -430,6 +431,10 @@ class OpenAIProvider(LLMProvider):
             ),
             model=self.model, latency_s=time.time() - started,
         )
+
+    def _provider_request_options(self, json_mode: bool) -> Dict[str, object]:
+        """Provider-specific fields for OpenAI-compatible request bodies."""
+        return {}
 
 
 class NvidiaProvider(OpenAIProvider):
@@ -453,6 +458,18 @@ class NvidiaProvider(OpenAIProvider):
         self.model = model or settings.nvidia_model
         self.base_url = (base_url or settings.nvidia_base_url).rstrip("/")
         self.max_retries = settings.llm_max_retries if max_retries is None else max_retries
+
+    def _provider_request_options(self, json_mode: bool) -> Dict[str, object]:
+        """Keep Nemotron's final answer non-empty and JSON-focused.
+
+        NVIDIA recommends ``force_nonempty_content`` for coding agents.
+        Schema-bound calls also disable the reasoning trace so the returned
+        content is the requested JSON object rather than an unfinished trace.
+        """
+        options: Dict[str, object] = {"force_nonempty_content": True}
+        if json_mode:
+            options["enable_thinking"] = False
+        return {"chat_template_kwargs": options}
 
 
 class OllamaProvider(LLMProvider):

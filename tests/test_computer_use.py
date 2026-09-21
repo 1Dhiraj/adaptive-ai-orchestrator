@@ -24,11 +24,13 @@ from orchestrator.tools.computer_use import (
 class FakeBackend(Tool):
     """Stands in for a Playwright MCP tool or Hermes: records what it ran."""
 
-    def __init__(self, name: str = "web_browser_navigate", live: bool = True) -> None:
+    def __init__(self, name: str = "web_browser_navigate", live: bool = True,
+                 response: str | None = None) -> None:
         super().__init__()
         self.name = name
         self.capability = "browser"
         self._live = live
+        self.response = response
         self.calls: list = []
 
     def is_live(self) -> bool:
@@ -36,7 +38,7 @@ class FakeBackend(Tool):
 
     def _run(self, task, context=None):
         self.calls.append(task)
-        return f"ok: {task}"
+        return self.response if self.response is not None else f"ok: {task}"
 
 
 def directive(**arguments) -> str:
@@ -147,7 +149,9 @@ class TestLimitsAndLogging:
     """
 
     def test_action_limit_stops_the_run(self, allow_everything, tmp_path):
-        backend = FakeBackend()
+        # Hermes accepts outcome-like natural-language actions. Browser and
+        # native backends now compile a small typed action language instead.
+        backend = FakeBackend("hermes_desktop")
         tool = ComputerUseTool(run_id="limits", tools=ToolManager([backend]),
                                root=tmp_path)
         out = tool.execute(directive(goal="g", targets=["example.com"],
@@ -164,6 +168,198 @@ class TestLimitsAndLogging:
         assert log.exists()
         events = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
         assert [e["event"] for e in events] == ["start", "action", "finish"]
+
+    def test_descriptive_open_action_is_compiled_to_an_approved_url(
+            self, allow_everything, tmp_path):
+        backend = FakeBackend()
+        tool = ComputerUseTool(run_id="browser-url", tools=ToolManager([backend]),
+                               root=tmp_path)
+
+        tool.execute(directive(goal="read it", targets=["example.com"],
+                               actions=["open the page", "read the heading"]))
+
+        assert len(backend.calls) == 1
+        assert json.loads(backend.calls[0].removeprefix("TOOL_DIRECTIVE: ")) == {
+            "arguments": {"url": "https://example.com"}}
+
+    def test_descriptive_read_appends_a_browser_snapshot(
+            self, allow_everything, tmp_path):
+        navigate = FakeBackend()
+        snapshot = FakeBackend("web_browser_snapshot", response="""
+        - link "Skip to main content" [ref=a]
+        - /url: https://support.google.com/websearch/answer/1
+        - heading [level=3] [ref=b]: Faster feedback loops
+        - text: Agents can automate repetitive engineering work.
+        - /url: https://example.com/research
+        """)
+        tool = ComputerUseTool(
+            run_id="browser-snapshot", tools=ToolManager([navigate, snapshot]),
+            root=tmp_path)
+
+        output = tool.execute(directive(
+            goal="read it", targets=["example.com"],
+            actions=["open the page", "read the heading"]))
+
+        assert snapshot.calls == [""]
+        assert "page highlights" in output
+        assert "Faster feedback loops" in output
+        assert "https://example.com/research" in output
+        assert "Skip to main content" not in output
+        assert "support.google.com" not in output
+
+    def test_snapshot_prioritises_source_urls_before_long_page_text(
+            self, allow_everything, tmp_path):
+        navigate = FakeBackend()
+        snapshot = FakeBackend("web_browser_snapshot", response=(
+            "Page Title: Search results\n"
+            + "\n".join(f"- text: overview filler {i} " + "x" * 90 for i in range(20))
+            + "\n- /url: https://example.com/direct-source\n"
+            + "- heading [level=3]: Direct source title\n"))
+        tool = ComputerUseTool(
+            run_id="browser-source-priority",
+            tools=ToolManager([navigate, snapshot]), root=tmp_path)
+
+        output = tool.execute(directive(
+            goal="read it", targets=["example.com"],
+            actions=["open the page", "read the results"]))
+
+        assert "https://example.com/direct-source" in output
+
+    def test_google_query_is_compiled_to_a_search_url(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("ORCHESTRATOR_ALLOW_DESKTOP", "1")
+        monkeypatch.setenv("ORCHESTRATOR_COMPUTER_USE_ALLOW", "google.com")
+        backend = FakeBackend()
+        tool = ComputerUseTool(run_id="browser-search", tools=ToolManager([backend]),
+                               root=tmp_path)
+
+        tool.execute(directive(
+            goal="research", targets=["google.com"],
+            actions=["open the page", "enter query 'AI agents 2024', submit"]))
+
+        arguments = json.loads(
+            backend.calls[0].removeprefix("TOOL_DIRECTIVE: "))["arguments"]
+        assert arguments["url"] == "https://google.com/search?q=AI+agents+2024"
+
+    def test_google_query_can_be_recovered_from_the_goal(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("ORCHESTRATOR_ALLOW_DESKTOP", "1")
+        monkeypatch.setenv("ORCHESTRATOR_COMPUTER_USE_ALLOW", "google.com")
+        backend = FakeBackend()
+        tool = ComputerUseTool(run_id="browser-goal-search",
+                               tools=ToolManager([backend]), root=tmp_path)
+
+        tool.execute(directive(
+            goal="Search Google for recent articles on AI coding agents; collect sources",
+            targets=["google.com"], actions=["open the page"]))
+
+        arguments = json.loads(
+            backend.calls[0].removeprefix("TOOL_DIRECTIVE: "))["arguments"]
+        assert arguments["url"] == (
+            "https://google.com/search?q=recent+articles+on+AI+coding+agents")
+
+    def test_search_targets_do_not_replace_results_with_a_bare_site(
+            self, monkeypatch, tmp_path):
+        monkeypatch.setenv("ORCHESTRATOR_ALLOW_DESKTOP", "1")
+        monkeypatch.setenv("ORCHESTRATOR_COMPUTER_USE_ALLOW", "google.com,github.com")
+        navigate = FakeBackend()
+        snapshot = FakeBackend("web_browser_snapshot", response="""
+        Page Title: AI agents - Google Search
+        - heading [level=3]: Survey of AI coding agents
+        - /url: https://github.com/example/agent-survey
+        - text: Benefits include automation; limitations include verification.
+        """)
+        tool = ComputerUseTool(
+            run_id="browser-search-evidence",
+            tools=ToolManager([navigate, snapshot]), root=tmp_path)
+
+        output = tool.execute(directive(
+            goal="research", targets=["google.com", "github.com"],
+            actions=["open https://www.google.com", "enter query 'AI agents 2024'",
+                     "extract github.com result URLs"]))
+
+        assert len(navigate.calls) == 1
+        assert "google.com/search?q=AI+agents+2024" in navigate.calls[0]
+        assert snapshot.calls == [""]
+        assert "https://github.com/example/agent-survey" in output
+
+    def test_explicit_url_is_used_only_on_the_approved_target(
+            self, allow_everything, tmp_path):
+        backend = FakeBackend()
+        tool = ComputerUseTool(run_id="browser-explicit", tools=ToolManager([backend]),
+                               root=tmp_path)
+
+        tool.execute(directive(
+            goal="read it", targets=["example.com"],
+            actions=["open https://www.example.com/report?q=ai", "read the heading"]))
+
+        arguments = json.loads(
+            backend.calls[0].removeprefix("TOOL_DIRECTIVE: "))["arguments"]
+        assert arguments["url"] == "https://www.example.com/report?q=ai"
+
+        backend.calls.clear()
+        tool.execute(directive(
+            goal="stay bounded", targets=["example.com"],
+            actions=["open https://evil.test/steal", "read the heading"]))
+        arguments = json.loads(
+            backend.calls[0].removeprefix("TOOL_DIRECTIVE: "))["arguments"]
+        assert arguments["url"] == "https://example.com"
+
+    def test_named_browser_click_uses_snapshot_ref(self, allow_everything, tmp_path):
+        navigate = FakeBackend()
+        snapshot = FakeBackend("web_browser_snapshot", response='''
+        Page Title: Example
+        - button "Continue" [ref=e12]
+        - text: Ready
+        ''')
+        click = FakeBackend("web_browser_click")
+        tool = ComputerUseTool(
+            run_id="browser-click",
+            tools=ToolManager([navigate, snapshot, click]), root=tmp_path)
+
+        output = tool.execute(directive(
+            goal="continue", targets=["example.com"],
+            actions=["open the page", "click Continue button", "read the result"]))
+
+        arguments = json.loads(
+            click.calls[0].removeprefix("TOOL_DIRECTIVE: "))["arguments"]
+        assert arguments == {"element": "Continue", "ref": "e12"}
+        assert "click Continue" in output
+
+    def test_browser_typing_uses_named_field_ref(self, allow_everything, tmp_path):
+        navigate = FakeBackend()
+        snapshot = FakeBackend("web_browser_snapshot", response='''
+        - textbox "Search" [ref=q7]
+        ''')
+        type_tool = FakeBackend("web_browser_type")
+        tool = ComputerUseTool(
+            run_id="browser-type",
+            tools=ToolManager([navigate, snapshot, type_tool]), root=tmp_path)
+
+        tool.execute(directive(
+            goal="fill search", targets=["example.com"],
+            actions=["open the page", "type 'AI agents' into Search"]))
+
+        arguments = json.loads(
+            type_tool.calls[0].removeprefix("TOOL_DIRECTIVE: "))["arguments"]
+        assert arguments == {"element": "Search", "ref": "q7", "text": "AI agents"}
+
+    def test_native_desktop_gets_typed_directives_not_natural_language(
+            self, allow_everything, tmp_path):
+        desktop = FakeBackend("desktop_native")
+        tool = ComputerUseTool(
+            run_id="native-actions", tools=ToolManager([desktop]), root=tmp_path)
+
+        output = tool.execute(directive(
+            goal="write a note", targets=["notepad"],
+            actions=["launch the app", "type 'hello judges'", "save file"]))
+
+        specs = [json.loads(call.removeprefix("TOOL_DIRECTIVE: "))["arguments"]
+                 for call in desktop.calls]
+        assert specs == [
+            {"action": "launch", "app": "notepad"},
+            {"action": "type", "text": "hello judges", "window": "notepad"},
+            {"action": "key", "keys": "ctrl+s", "window": "notepad"},
+        ]
+        assert "3 action(s)" in output
 
 
 class TestRegistration:

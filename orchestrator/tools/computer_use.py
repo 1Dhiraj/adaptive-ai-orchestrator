@@ -33,6 +33,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote_plus, urlparse
 
 from .base import Tool, ToolError
 from .workspace import DEFAULT_WORKSPACE_ROOT, workspace_for
@@ -146,6 +147,199 @@ def _parse_plan(task: str) -> ComputerUsePlan:
         max_steps=int(payload.get("max_steps") or _DEFAULT_MAX_STEPS),
         time_limit_s=float(payload.get("time_limit_s") or _DEFAULT_TIME_LIMIT_S),
     )
+
+
+def _browser_url(target: str, actions: List[str], goal: str = "") -> str:
+    """Compile an approved browser target and common search instruction.
+
+    ``browser_navigate`` accepts a URL, while the computer-use plan deliberately
+    contains human-readable actions. Passing strings such as ``open the page``
+    through as URLs produces convincing but invalid requests. Search boxes are
+    equivalent to a GET URL, so compile that common case without needing brittle
+    element selectors.
+    """
+    base = target if re.match(r"^https?://", target, re.I) else f"https://{target}"
+    parsed = urlparse(base)
+    if not parsed.hostname or any(ch.isspace() for ch in base):
+        raise ToolError(f"refused: '{target}' is not a valid browser target")
+
+    approved_host = parsed.hostname.lower()
+    query = None
+    for action in actions:
+        match = re.search(r"(?i)\b(?:enter\s+)?(?:search\s+)?query\b[^'\"]*['\"]([^'\"]+)['\"]", action)
+        if match:
+            query = match.group(1).strip()
+            break
+    if not query:
+        goal_match = re.search(
+            r"(?i)\bsearch(?:\s+(?:google(?:\.com)?|the web))?\s+for\s+(.+?)(?:;|$)",
+            goal,
+        )
+        if goal_match:
+            query = goal_match.group(1).strip(" .")
+    # A plan commonly says both "open Google" and then "enter query". The
+    # search URL is the final intended state and must win over the earlier,
+    # explicit Google home-page URL.
+    if query and parsed.hostname.lower().removeprefix("www.") == "google.com":
+        return f"{parsed.scheme}://{parsed.netloc}/search?q={quote_plus(query)}"
+
+    for action in actions:
+        match = re.search(r"https?://[^\s'\"<>]+", action, re.I)
+        if not match:
+            continue
+        candidate = match.group(0).rstrip(".,);]")
+        candidate_host = (urlparse(candidate).hostname or "").lower()
+        if candidate_host == approved_host or candidate_host.endswith("." + approved_host):
+            return candidate
+
+    return base
+
+
+def _snapshot_ref(snapshot: str, label: str) -> Optional[str]:
+    """Find the accessibility ref for a plainly named control."""
+    wanted = re.sub(r"\s+", " ", label).strip(" '\".").lower()
+    if not wanted:
+        return None
+    exact, partial = [], []
+    for line in str(snapshot).splitlines():
+        match = re.search(r"\[ref=([^\]\s]+)", line)
+        if not match:
+            continue
+        normal = re.sub(r"\s+", " ", line).lower()
+        if f'"{wanted}"' in normal or f"'{wanted}'" in normal:
+            exact.append(match.group(1))
+        elif wanted in normal:
+            partial.append(match.group(1))
+    found = exact or partial
+    return found[0] if len(found) == 1 else None
+
+
+def _browser_interaction(action: str, snapshot: str) -> Optional[tuple[List[str], dict]]:
+    """Compile common human browser instructions into typed MCP arguments."""
+    text = action.strip()
+    # Navigation, search and read/extract instructions are handled by the URL
+    # compiler and snapshots, not replayed as bogus navigate calls.
+    if re.search(r"(?i)^\s*(?:open|navigate|go to|read|extract|collect|summarize|search\b)", text):
+        return None
+    if re.search(r"(?i)\bquery\b", text):
+        return None
+    if re.fullmatch(r"(?i)\s*submit\s*", text):
+        return ["web_browser_press_key", "browser_press_key"], {"key": "Enter"}
+
+    typed = re.search(
+        r"(?i)^\s*(?:type|enter|fill)\s+(['\"])(.*?)\1\s+(?:into|in)\s+(?:the\s+)?(.+?)\s*$",
+        text,
+    )
+    if typed:
+        value, label = typed.group(2), typed.group(3).strip(" '\".")
+        ref = _snapshot_ref(snapshot, label)
+        if not ref:
+            raise ToolError(f"could not uniquely find {label!r} in the browser snapshot")
+        return ["web_browser_type", "browser_type"], {
+            "element": label, "ref": ref, "text": value,
+        }
+
+    clicked = re.search(r"(?i)^\s*click\s+(?:the\s+)?(.+?)\s*$", text)
+    if clicked:
+        label = re.sub(r"(?i)\s+(?:button|link)$", "", clicked.group(1)).strip(" '\".")
+        ref = _snapshot_ref(snapshot, label)
+        if not ref:
+            raise ToolError(f"could not uniquely find {label!r} in the browser snapshot")
+        return ["web_browser_click", "browser_click"], {"element": label, "ref": ref}
+
+    pressed = re.search(r"(?i)^\s*press\s+(.+?)\s*$", text)
+    if pressed:
+        return ["web_browser_press_key", "browser_press_key"], {"key": pressed.group(1)}
+    raise ToolError(
+        f"unsupported browser action {text!r}; use open/read, click <label>, "
+        "type 'text' into <label>, or press <key>")
+
+
+def _native_action_spec(action: str, target: str) -> dict:
+    """Compile a human desktop action into ``desktop_native`` arguments."""
+    text = action.strip()
+    window = target.strip()
+    if re.search(r"(?i)\b(?:screenshot|capture (?:the )?screen)\b", text):
+        return {"action": "screenshot"}
+    if re.search(r"(?i)\b(?:list|show) (?:the )?windows\b", text):
+        return {"action": "windows"}
+    if re.search(r"(?i)^\s*(?:launch|open|start)\b", text):
+        named = re.sub(r"(?i)^\s*(?:launch|open|start)\s+(?:the\s+)?", "", text).strip(" .")
+        app = window if named.lower() in {"", "app", "application", "program", "window"} else named
+        return {"action": "launch", "app": app}
+    focused = re.search(r"(?i)^\s*(?:focus|activate|bring forward)\s*(.*)$", text)
+    if focused:
+        return {"action": "focus", "window": focused.group(1).strip(" .") or window}
+    typed = re.search(r"(?i)^\s*(?:type|write|enter)\s+(['\"])(.*?)\1", text)
+    if typed:
+        return {"action": "type", "text": typed.group(2), "window": window}
+    clicked = re.search(r"(?i)^\s*click\s+(?:at\s*)?\(?\s*(\d+)\s*[,x]\s*(\d+)\s*\)?", text)
+    if clicked:
+        return {"action": "click", "x": int(clicked.group(1)),
+                "y": int(clicked.group(2)), "window": window}
+    located = re.search(r"(?i)^\s*(?:locate|find)\s+(?:the\s+)?(.+?)\s*$", text)
+    if located:
+        return {"action": "locate", "target": located.group(1).strip(" ."),
+                "window": window}
+    pressed = re.search(r"(?i)^\s*press\s+(.+?)\s*$", text)
+    if pressed:
+        return {"action": "key", "keys": pressed.group(1), "window": window}
+    if re.search(r"(?i)^\s*save(?: the)? file\s*$", text):
+        return {"action": "key", "keys": "ctrl+s", "window": window}
+    raise ToolError(
+        f"unsupported desktop action {text!r}; use screenshot, launch/focus, "
+        "locate, click x,y, type 'text', press <keys>, or save file")
+
+
+def _snapshot_highlights(snapshot: str, limit: int = 700) -> str:
+    """Compress an accessibility snapshot into evidence that fits agent context.
+
+    Raw browser snapshots begin with navigation chrome and can be tens of
+    thousands of characters. Downstream agents have a deliberately small
+    shared-context budget, so keep semantic titles, URLs, headings, and text
+    snippets while dropping refs and common browser/search controls.
+    """
+    skip = re.compile(
+        r"(?i)skip to|accessibility help|go to google home|search by (?:voice|image)|"
+        r"google apps|sign in|settings|\blink \"(?:all|images|videos|news)\""
+    )
+    interesting = re.compile(
+        r"(?i)(?:page title:|^- (?:heading|strong|text:|/url:\s*https?://))"
+    )
+    titles: List[str] = []
+    urls: List[str] = []
+    content: List[str] = []
+    seen = set()
+    for raw_line in str(snapshot).splitlines():
+        line = raw_line.strip()
+        if not interesting.search(line) or skip.search(line):
+            continue
+        if re.search(r"(?i)^-?\s*/url:\s*https?://(?:[^/]*\.)?google\.", line):
+            continue
+        line = re.sub(r"\s*\[(?:ref|cursor|level|disabled|active)[^\]]*\]", "", line)
+        line = re.sub(r"^-\s*", "", line).strip()
+        if not line or line in seen:
+            continue
+        if re.match(r"(?i)/url:\s*https?://", line):
+            urls.append(line)
+        elif line.lower().startswith("page title:"):
+            titles.append(line)
+        else:
+            content.append(line)
+        seen.add(line)
+
+    # Direct source URLs are the scarcest and most valuable evidence. Search
+    # pages often put a long generated overview before their organic results,
+    # so source URLs must not be pushed beyond the context limit.
+    highlights: List[str] = []
+    used = 0
+    for line in titles + urls[:8] + content:
+        addition = len(line) + (1 if highlights else 0)
+        if used + addition > limit:
+            continue
+        highlights.append(line)
+        used += addition
+    return "\n".join(highlights) or str(snapshot)[:limit]
 
 
 class ComputerUseTool(Tool):
@@ -276,6 +470,11 @@ class ComputerUseTool(Tool):
         if backend_tool is None:
             raise ToolError(f"backend '{plan.backend}' disappeared before it could run")
 
+        if plan.backend in {"web_browser_navigate", "browser_navigate"}:
+            return self._run_browser_plan(plan, backend_tool, started)
+        if plan.backend == "desktop_native":
+            return self._run_native_desktop_plan(plan, backend_tool, started)
+
         outputs: List[str] = []
         for action in plan.actions or [plan.goal]:
             if performed >= plan.max_steps:
@@ -297,5 +496,139 @@ class ComputerUseTool(Tool):
         self._log({"event": "finish", "actions": performed,
                    "seconds": round(time.monotonic() - started, 2)})
         body = "\n".join(outputs) or "(no actions performed)"
+        return (f"[computer_use] {plan.backend}: {performed} action(s) on "
+                f"{', '.join(plan.targets)}\n{body}")
+
+    def _run_native_desktop_plan(self, plan: ComputerUsePlan, desktop: Tool,
+                                 started: float) -> str:
+        """Drive the native backend with typed directives, never prose."""
+        outputs: List[str] = []
+        performed = 0
+        target = plan.targets[0]
+        for action in plan.actions or [plan.goal]:
+            if performed >= plan.max_steps:
+                outputs.append(f"stopped: reached the {plan.max_steps}-action limit")
+                break
+            if time.monotonic() - started >= plan.time_limit_s:
+                outputs.append(f"stopped: reached the {plan.time_limit_s:.0f}s time limit")
+                break
+            spec = _native_action_spec(action, target)
+            payload = "TOOL_DIRECTIVE: " + json.dumps({"arguments": spec})
+            try:
+                result = desktop.execute(payload)
+            except Exception as exc:  # noqa: BLE001
+                self._log({"event": "error", "action": action, "error": str(exc)[:500]})
+                raise ToolError(f"desktop_native failed on {action!r}: {exc}") from exc
+            performed += 1
+            self._log({"event": "action", "action": action, "result": str(result)[:500]})
+            outputs.append(f"{performed}. {action} -> {str(result)[:500]}")
+        self._log({"event": "finish", "actions": performed,
+                   "seconds": round(time.monotonic() - started, 2)})
+        return (f"[computer_use] desktop_native: {performed} action(s) on "
+                f"{', '.join(plan.targets)}\n" + ("\n".join(outputs) or "(no actions performed)"))
+
+    def _run_browser_plan(self, plan: ComputerUsePlan, navigate: Tool,
+                          started: float) -> str:
+        """Run a descriptive browser plan using typed MCP calls.
+
+        Navigation receives a real URL derived only from an already-approved
+        target. A snapshot is appended when available so read/research steps
+        return page content instead of merely reporting that navigation worked.
+        """
+        navigation_outputs: List[str] = []
+        performed = 0
+        urls = [_browser_url(target, plan.actions, plan.goal) for target in plan.targets]
+
+        # ``targets`` is an allow-list, not a list of pages that must all be
+        # opened.  If the plan asks Google for results from github.com, opening
+        # the bare GitHub home page afterwards destroys the useful search-page
+        # state. Keep explicit/search URLs and omit bare domains that merely
+        # bound where later interactions are allowed.
+        has_search = any("/search?" in url for url in urls)
+        if has_search:
+            urls = [url for url in urls if "/search?" in url or any(
+                re.search(rf"https?://(?:[^/]+\.)?{re.escape((urlparse(url).hostname or '').lower())}(?:/[^\s'\"<>]*)?",
+                          action, re.I)
+                for action in plan.actions)]
+
+        snapshot = None
+        if self.tools is not None:
+            for name in ("web_browser_snapshot", "browser_snapshot"):
+                candidate = self.tools.get(name)
+                if candidate is not None and not candidate.is_broken and candidate.is_live():
+                    snapshot = candidate
+                    break
+
+        last_snapshot = ""
+        for url in urls:
+            if performed >= plan.max_steps or time.monotonic() - started >= plan.time_limit_s:
+                break
+            payload = "TOOL_DIRECTIVE: " + json.dumps({"arguments": {"url": url}})
+            try:
+                result = navigate.execute(payload)
+            except Exception as exc:  # noqa: BLE001 - report, do not crash the run
+                self._log({"event": "error", "action": f"navigate {url}",
+                           "error": str(exc)[:500]})
+                raise ToolError(f"{plan.backend} failed while opening '{url}': {exc}") from exc
+            performed += 1
+            self._log({"event": "action", "action": f"navigate {url}",
+                       "result": str(result)[:500]})
+            navigation_outputs.append(f"{performed}. opened {url} -> {str(result)[:1000]}")
+            if (snapshot is not None and performed < plan.max_steps
+                    and time.monotonic() - started < plan.time_limit_s):
+                try:
+                    snapshot_result = snapshot.execute("")
+                except Exception as exc:  # noqa: BLE001 - navigation is still useful
+                    self._log({"event": "error", "action": "snapshot",
+                               "error": str(exc)[:500]})
+                    navigation_outputs.append(f"snapshot unavailable: {exc}")
+                else:
+                    performed += 1
+                    last_snapshot = str(snapshot_result)
+                    self._log({"event": "action", "action": "snapshot",
+                               "result": str(snapshot_result)[:500]})
+                    # Replace navigation chatter with compact evidence while
+                    # this exact page is still open.
+                    navigation_outputs[-1] = (
+                        f"page highlights from {url}:\n"
+                        f"{_snapshot_highlights(str(snapshot_result))}")
+
+        for action in plan.actions:
+            interaction = _browser_interaction(action, last_snapshot)
+            if interaction is None:
+                continue
+            if performed >= plan.max_steps or time.monotonic() - started >= plan.time_limit_s:
+                navigation_outputs.append("stopped: browser action/time limit reached")
+                break
+            names, arguments = interaction
+            action_tool = None
+            if self.tools is not None:
+                for name in names:
+                    candidate = self.tools.get(name)
+                    if candidate is not None and not candidate.is_broken and candidate.is_live():
+                        action_tool = candidate
+                        break
+            if action_tool is None:
+                raise ToolError(f"browser backend lacks the tool needed for {action!r}")
+            payload = "TOOL_DIRECTIVE: " + json.dumps({"arguments": arguments})
+            try:
+                result = action_tool.execute(payload)
+            except Exception as exc:  # noqa: BLE001
+                self._log({"event": "error", "action": action, "error": str(exc)[:500]})
+                raise ToolError(f"browser failed on {action!r}: {exc}") from exc
+            performed += 1
+            self._log({"event": "action", "action": action, "result": str(result)[:500]})
+            navigation_outputs.append(f"{performed}. {action} -> {str(result)[:500]}")
+            if (snapshot is not None and performed < plan.max_steps
+                    and time.monotonic() - started < plan.time_limit_s):
+                snapshot_result = snapshot.execute("")
+                performed += 1
+                last_snapshot = str(snapshot_result)
+                navigation_outputs.append(
+                    f"after {action}:\n{_snapshot_highlights(last_snapshot)}")
+
+        self._log({"event": "finish", "actions": performed,
+                   "seconds": round(time.monotonic() - started, 2)})
+        body = "\n".join(navigation_outputs) or "(no actions performed)"
         return (f"[computer_use] {plan.backend}: {performed} action(s) on "
                 f"{', '.join(plan.targets)}\n{body}")

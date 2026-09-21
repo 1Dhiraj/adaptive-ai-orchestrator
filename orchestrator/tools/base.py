@@ -13,6 +13,10 @@ class ToolError(RuntimeError):
     """A tool tried to run and failed."""
 
 
+class ActionReviewRequiredError(ToolError):
+    """A gated action was not performed and must be reviewed again safely."""
+
+
 class ToolUnavailableError(ToolError):
     """The requested tool and every fallback for it are unusable."""
 
@@ -253,6 +257,15 @@ class ToolManager:
             invocation.attempts.append(candidate_name)
             try:
                 output = tool.execute(task, context)
+            except ActionReviewRequiredError as exc:
+                # This is not an availability failure and must never route to
+                # a fallback that could perform the irreversible action by a
+                # different channel. Preserve the typed signal for Workflow.
+                invocation.errors[candidate_name] = str(exc)
+                invocation.duration_s = time.time() - started
+                with self._lock:
+                    self.history.append(invocation)
+                raise
             except Exception as exc:  # noqa: BLE001 - any tool failure is routable
                 invocation.errors[candidate_name] = str(exc)
                 continue

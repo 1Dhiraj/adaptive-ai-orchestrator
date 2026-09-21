@@ -10,8 +10,9 @@ user account:
 npx adaptive-ai-orchestrator
 ```
 
-Version 1.0.0 ships the verified Windows runtime. The release workflow builds
-Windows, macOS and Linux binaries before publishing subsequent multiplatform releases.
+Version 1.1.0 ships the latest adaptive execution, browser, and approval
+fixes. The release workflow builds Windows, macOS and Linux binaries before
+publishing subsequent multiplatform releases.
 
 For a permanent command:
 
@@ -716,6 +717,17 @@ each API's plain HTTP contract in [orchestrator/llm.py](orchestrator/llm.py).
 ---
 
 ## Live dashboard
+
+On Windows, the repository launcher verifies the configured provider and starts
+the complete local dashboard on port 8000:
+
+```powershell
+.\run.bat
+```
+
+Pass a different port as the first argument (for example, `.\run.bat 8001`) or
+use `.\run.bat --check` to verify the configured provider without starting a
+second server.
 
 ```bash
 python -m orchestrator.cli serve       # http://127.0.0.1:8000

@@ -125,6 +125,17 @@ class TestPlanning:
             verbose=False)
         assert "terminal" not in workflow.tools
 
+    def test_python_command_line_project_receives_local_coding_tools(self):
+        from orchestrator import Workflow
+        from orchestrator.llm import StubProvider
+
+        workflow = Workflow.from_description(
+            "Build a Python command-line student task manager with JSON storage and tests",
+            llm=StubProvider(), persist=False, verbose=False)
+
+        assert "workspace" in workflow.tools
+        assert "terminal" in workflow.tools
+
     def test_roles_are_normalised(self):
         result = TaskPlanner(llm=ScriptedProvider(VALID_PLAN)).plan("Build something")
         assert result.graph.get("test").agent_role == "testing"  # "qa" -> "testing"
@@ -162,6 +173,20 @@ class TestPlanning:
         assert graph.get("send").requires_tool == "email"
         assert any("email_dispatcher" in r for r in repairs)
 
+    def test_adaptive_email_owns_gmail_without_redundant_browser_step(self):
+        graph, repairs = TaskPlanner.build_graph([
+            {"id": "open_gmail", "role": "operator",
+             "description": "Open the Gmail browser login page to prepare the email",
+             "depends_on": [], "tool": "computer_use"},
+            {"id": "send", "role": "writer",
+             "description": "Draft and send the requested hello email",
+             "depends_on": ["open_gmail"], "tool": "adaptive_email"},
+        ], available_tools={"computer_use", "adaptive_email"})
+
+        assert graph.topological_order() == ["send"]
+        assert graph.get("send").depends_on == []
+        assert any("adaptive_email owns Gmail" in repair for repair in repairs)
+
     def test_known_alias_resolves_without_noise(self):
         from orchestrator.tools import default_tool_manager
 
@@ -198,15 +223,59 @@ class TestPlanning:
         result = TaskPlanner(llm=ScriptedProvider(VALID_PLAN)).plan("x")
         assert result.usage.calls == 1
 
-    def test_unusable_response_falls_back_to_a_generic_plan(self):
-        result = TaskPlanner(llm=ScriptedProvider("I'd be happy to help!")).plan("Build an app")
-        assert result.used_fallback_plan
-        assert len(result.graph) == 5
-        result.graph.validate()
+    def test_scalar_fact_values_are_normalised_to_text(self):
+        """JSON-mode models may preserve numeric clarification answers.
 
-    def test_empty_task_list_falls_back(self):
-        result = TaskPlanner(llm=ScriptedProvider('{"tasks": []}')).plan("x")
-        assert result.used_fallback_plan
+        The typed fact store intentionally holds strings, so the planner's
+        model-output boundary must normalise JSON scalars before validation.
+        """
+        plan = json.dumps({
+            "tasks": [{
+                "id": "report", "role": "writer", "description": "Write it",
+                "depends_on": [], "assumes": ["report_length", "include_sources"],
+            }],
+            "facts": [
+                {"key": "report_length", "value": 800, "owner": "report", "aliases": []},
+                {"key": "include_sources", "value": True, "owner": "report", "aliases": []},
+            ],
+        })
+
+        result = TaskPlanner(llm=ScriptedProvider(plan)).plan("Write a report")
+
+        assert result.graph.facts["report_length"].value == "800"
+        assert result.graph.facts["include_sources"].value == "true"
+        assert sum("normalised fact" in repair for repair in result.repairs) == 2
+
+    def test_unusable_response_retries_then_fails_closed(self):
+        provider = ScriptedProvider("I'd be happy to help!")
+        with pytest.raises(PlanningError, match="after 3 attempts"):
+            TaskPlanner(llm=provider).plan("Build an app")
+        assert len(provider.prompts) == 3
+
+    def test_empty_task_list_retries_then_fails_closed(self):
+        provider = ScriptedProvider('{"tasks": []}')
+        with pytest.raises(PlanningError, match="No fallback plan was created"):
+            TaskPlanner(llm=provider).plan("x")
+        assert len(provider.prompts) == 3
+
+    def test_invalid_first_response_can_be_repaired_by_the_model(self):
+        class RepairingProvider(ScriptedProvider):
+            def _generate(self, prompt, system, json_mode, metadata=None):
+                self.prompts.append(prompt)
+                text = "not json" if len(self.prompts) == 1 else VALID_PLAN
+                return LLMResponse(
+                    text=text,
+                    usage=LLMUsage(calls=1, prompt_tokens=10, completion_tokens=20),
+                    model=self.model,
+                    latency_s=0.0,
+                )
+
+        provider = RepairingProvider("unused")
+        result = TaskPlanner(llm=provider).plan("Build an app")
+        assert result.graph.topological_order() == ["design", "build", "test"]
+        assert result.usage.calls == 2
+        assert result.used_fallback_plan is False
+        assert result.repairs[0] == "AI planner repaired its response on attempt 2"
 
     def test_stub_provider_produces_a_valid_plan(self, stub_llm):
         result = TaskPlanner(llm=stub_llm).plan("Build a task manager with auth")

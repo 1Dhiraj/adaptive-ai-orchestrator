@@ -125,6 +125,12 @@ class TestRequirementChecking:
                                             kind=RequirementKind.PACKAGE))
         assert req.status is RequirementStatus.MISSING
 
+    def test_runtime_declared_as_package_is_normalised_to_binary(self):
+        req = Requirement.from_dict({"name": "python", "kind": "package"})
+        assert req.kind is RequirementKind.BINARY
+        check_requirement(req)
+        assert req.status is RequirementStatus.READY
+
     def test_binary_on_path_is_ready(self):
         req = check_requirement(Requirement(name="python", kind=RequirementKind.BINARY))
         assert req.status in {RequirementStatus.READY, RequirementStatus.MISSING}

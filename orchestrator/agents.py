@@ -283,7 +283,16 @@ class Agent:
     @staticmethod
     def merge_tool_result(agent_output: str, requested_tool: str,
                           invocation: ToolInvocation) -> str:
-        """Append the tool result, never replacing the agent's own reasoning."""
+        """Append the tool result without leaking its machine-only directive.
+
+        The directive has already been executed and can consume most of a
+        downstream agent's context budget. Keep the human-facing deliverable
+        and the real tool result instead.
+        """
+        agent_output = re.sub(
+            r"(?:\r?\n)?TOOL_DIRECTIVE:.*$", "", agent_output,
+            flags=re.MULTILINE | re.DOTALL,
+        ).rstrip()
         suffix = f"\n\n---\nTool `{invocation.tool_used}`"
         if invocation.used_fallback:
             suffix += f" (FALLBACK for `{requested_tool}`)"

@@ -130,7 +130,8 @@ Use type "secret" for credentials. At most 2 inputs per step, and most steps
 should have none at all.
 
 TASKS:
-- Between 3 and 8 tasks. Fewer, larger tasks beat many trivial ones.
+- Between 1 and 8 tasks. Use one task for one direct real-world action; use
+  several only when distinct outputs or true dependencies exist.
 - Every id in depends_on MUST be the id of another task in this list.
 - The graph must be acyclic.
 - Put tasks that could run at the same time at the same dependency depth --
@@ -142,6 +143,12 @@ TASKS:
   browser or desktop action may need account sign-in and explicit permission.
 - Sending email is real work: preserve the supplied recipient, draft the
   content yourself, and require approval for the exact message before sending.
+  Make it ONE adaptive_email task. That tool owns opening Gmail, sign-in,
+  drafting, review and sending; never add a separate computer_use/login step.
+- A simple browser or desktop instruction is ONE computer_use task. Put the
+  target sites/apps and concrete actions in its description; do not add
+  separate planning or verification prose steps unless they produce a real
+  deliverable.
 - Descriptions state the deliverable, not the process.
 - Use condition only for a real branch. Its source must be a dependency's id
   or trigger.field for webhook data. Omit condition for normal tasks.
@@ -154,7 +161,11 @@ TASKS:
 SOFTWARE_TASK_PATTERN = re.compile(
     r"\b(?:web|mobile|desktop)\s+app(?:lication)?\b|\bwebsite\b|\bsoftware\b|"
     r"\b(?:frontend|backend|full[ -]?stack|api|microservice|codebase)\b|"
-    r"\b(?:build|develop|implement|create)\b.{0,35}\b(?:app|system|platform|portal|dashboard)\b",
+    r"\b(?:build|develop|implement|create|write)\b.{0,50}\b"
+    r"(?:app|application|system|platform|portal|dashboard|cli|command[ -]?line|"
+    r"script|program|package|library)\b|"
+    r"\b(?:python|javascript|typescript|java|rust|golang|c\+\+)\b.{0,45}\b"
+    r"(?:cli|command[ -]?line|script|program|tool|app|application)\b",
     re.IGNORECASE,
 )
 
@@ -298,6 +309,7 @@ _DELIVERABLE_PHRASES = re.compile(
 #: Too many questions is its own failure: the operator ends up doing the work.
 MAX_INPUTS_PER_STEP = 2
 MAX_INPUTS_PER_WORKFLOW = 5
+MAX_PLAN_ATTEMPTS = 3
 
 
 def _is_deliverable_request(request: Any) -> bool:
@@ -415,16 +427,46 @@ class TaskPlanner:
                            f"do not pretend it was executed:\n{catalogue}")
 
         from .llm import provider_for_role
-        response = provider_for_role(self.llm, "planner").generate(
+        planner_provider = provider_for_role(self.llm, "planner")
+        response = planner_provider.generate(
             prompt, system=self.system_prompt, json_mode=True)
+        total_usage = response.usage
         parsed = extract_json(response.text)
+        attempt = 1
 
-        used_fallback = False
+        # A malformed model response must never turn into an unrelated plan.
+        # Ask the same planner to repair its answer, preserving the original
+        # task and installed-tool catalogue. If it still cannot produce a
+        # usable task list, fail closed so the dashboard can offer a retry.
+        while (not parsed or not isinstance(parsed.get("tasks"), list)
+               or not parsed["tasks"]) and attempt < MAX_PLAN_ATTEMPTS:
+            reason = ("not a valid JSON object" if not parsed
+                      else "the 'tasks' array was missing or empty")
+            previous = (response.text or "(empty response)")[-12000:]
+            repair_prompt = (
+                f"{prompt}\n\n"
+                f"Your previous planning response was {reason}. Repair it and return "
+                "the complete plan again. It must follow the JSON schema in the system "
+                "message, contain a non-empty tasks array, use only capabilities the "
+                "task actually needs, and contain no prose or markdown fences.\n\n"
+                f"Previous response:\n{previous}"
+            )
+            response = planner_provider.generate(
+                repair_prompt, system=self.system_prompt, json_mode=True)
+            total_usage = total_usage + response.usage
+            parsed = extract_json(response.text)
+            attempt += 1
+
         if not parsed or not isinstance(parsed.get("tasks"), list) or not parsed["tasks"]:
-            parsed = self._fallback_plan(project_description)
-            used_fallback = True
+            raise PlanningError(
+                f"The AI planner did not return a valid task plan after "
+                f"{MAX_PLAN_ATTEMPTS} attempts. No fallback plan was created; retry the "
+                "request."
+            )
 
         repairs: List[str] = []
+        if attempt > 1:
+            repairs.append(f"AI planner repaired its response on attempt {attempt}")
         # Agents are parsed first so the graph can resolve step roles against
         # them -- otherwise a declared 'medical_writer' fuzzy-matches into the
         # built-in 'writer' and the specialist is silently lost.
@@ -437,14 +479,25 @@ class TaskPlanner:
         from .change_aware import FactStore, check_plan
         from .config import settings
 
+        raw_facts = parsed.get("facts") or []
+        normalised_facts = []
+        for raw_fact in raw_facts:
+            fact = raw_fact
+            if isinstance(raw_fact, dict):
+                value = raw_fact.get("value")
+                if value is not None and not isinstance(value, (str, list, dict)):
+                    fact = dict(raw_fact)
+                    fact["value"] = json.dumps(value, ensure_ascii=False)
+                    repairs.append(
+                        f"normalised fact '{raw_fact.get('key', '(unknown)')}' value to text"
+                    )
+            normalised_facts.append(fact)
+
         try:
-            graph.facts = FactStore(parsed.get("facts") or [])
+            graph.facts = FactStore(normalised_facts)
         except (TypeError, ValueError) as exc:
             raise PlanningError(f"invalid requirement facts: {exc}") from exc
         validation = check_plan(graph, settings.plan_token_budget)
-        if used_fallback:
-            repairs.insert(0, "planner response was unusable; applied a generic fallback plan")
-
         # Now that the graph exists, record which steps each specialist covers.
         for agent in agents:
             if not agent.handles:
@@ -470,10 +523,10 @@ class TaskPlanner:
 
         return PlanResult(
             graph=graph,
-            usage=response.usage,
+            usage=total_usage,
             repairs=repairs,
             raw_response=response.text,
-            used_fallback_plan=used_fallback,
+            used_fallback_plan=False,
             requirements=report,
         )
 
@@ -624,6 +677,37 @@ class TaskPlanner:
         if not steps:
             raise PlanningError("planner produced no usable tasks")
 
+        # adaptive_email owns its browser lifecycle. Models sometimes insert
+        # a separate "open Gmail/login" computer_use step; that wastes a full
+        # model call and, worse, opens a different browser session from the
+        # reviewed draft. Remove only those clearly mail-specific precursors,
+        # preserving genuine browser research that may feed the message.
+        mail_browser = {
+            step.id for step in steps
+            if step.requires_tool == "computer_use"
+            and re.search(
+                r"(?i)(?:gmail|mail\.google|email).{0,50}(?:login|sign[ -]?in|browser|prepare)|"
+                r"(?:login|sign[ -]?in|browser|prepare).{0,50}(?:gmail|mail\.google|email)",
+                step.description,
+            )
+        }
+        if mail_browser and any(step.requires_tool == "adaptive_email" for step in steps):
+            by_id = {step.id: step for step in steps}
+            for step in steps:
+                if step.id in mail_browser:
+                    continue
+                rewritten: List[str] = []
+                for dependency in step.depends_on:
+                    if dependency in mail_browser:
+                        rewritten.extend(by_id[dependency].depends_on)
+                    else:
+                        rewritten.append(dependency)
+                step.depends_on = list(dict.fromkeys(rewritten))
+            for step_id in sorted(mail_browser):
+                repairs.append(
+                    f"dropped redundant mail-browser step '{step_id}'; adaptive_email owns Gmail")
+            steps = [step for step in steps if step.id not in mail_browser]
+
         # Cap questions across the whole workflow, keeping the earliest steps'
         # (they block the most). Being asked eight things up front reads as an
         # interrogation and is usually a sign the model over-declared.
@@ -668,34 +752,6 @@ class TaskPlanner:
         )
         revised = response.text.strip()
         return revised or f"{step.description} (updated: {new_requirement})"
-
-    # -- fallback ----------------------------------------------------------
-
-    @staticmethod
-    def _fallback_plan(description: str) -> Dict[str, Any]:
-        """A generic software-delivery DAG, used when the LLM output is unusable."""
-        topic = (description or "the project").strip().rstrip(".")
-        return {"notes": [
-            "The planner's response could not be parsed, so a generic "
-            "software-delivery plan was substituted. Review it before running."
-        ], "tasks": [
-            {"id": "requirements", "role": "research", "name": "Clarify Requirements",
-             "description": f"Clarify scope, constraints and success criteria for: {topic}.",
-             "depends_on": [], "tool": None},
-            {"id": "database", "role": "database", "name": "Design Schema",
-             "description": f"Design the data model and migrations for: {topic}.",
-             "depends_on": ["requirements"], "tool": "postgres"},
-            {"id": "backend", "role": "backend", "name": "Build API",
-             "description": f"Implement the API and business logic for: {topic}.",
-             "depends_on": ["database"], "tool": "github"},
-            {"id": "frontend", "role": "frontend", "name": "Build UI",
-             "description": f"Build the user interface for: {topic}.",
-             "depends_on": ["requirements"], "tool": None},
-            {"id": "testing", "role": "testing", "name": "Integration Tests",
-             "description": f"Write and run integration tests covering: {topic}.",
-             "depends_on": ["backend", "frontend"], "tool": "ci"},
-        ]}
-
 
 def plan_from_json(path: str) -> DependencyGraph:
     """Load a hand-written plan from a JSON file.

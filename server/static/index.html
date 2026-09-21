@@ -586,6 +586,45 @@ h3 {
   font-size:13px;
   margin-bottom:5px;
 }
+.artifact-file {
+  padding:11px 0;
+  border-bottom:1px solid #eef1f3;
+}
+.artifact-file:last-child {
+  border-bottom:0;
+}
+.artifact-path,.artifact-location {
+  font:11px/1.55 ui-monospace,Consolas,monospace;
+  color:#66727f;
+  overflow-wrap:anywhere;
+}
+.artifact-viewer {
+  margin-top:18px;
+  padding-top:18px;
+  border-top:1px solid var(--line);
+}
+.artifact-viewer-head {
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-start;
+  gap:16px;
+  margin-bottom:12px;
+}
+.artifact-viewer h3 {
+  font-size:15px;
+  margin:3px 0;
+}
+.artifact-viewer pre {
+  background:#f6f8fa;
+  border:1px solid var(--line);
+  padding:17px;
+  border-radius:7px;
+  font:12px/1.7 ui-monospace,Consolas,monospace;
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+  max-height:620px;
+  overflow:auto;
+}
 .view {
   animation:appear .2s ease
 }
@@ -878,6 +917,61 @@ table button {
 .action-card,#ask-panel {
   background:#fffaf0;
   border-color:#eddbb5;
+}
+.chat-intro {
+  margin:-7px 0 15px;
+  color:var(--muted);
+  font-size:12px;
+  line-height:1.6;
+}
+.chat-message {
+  display:flex;
+  align-items:flex-start;
+  gap:10px;
+  margin:12px 0;
+}
+.chat-message.user {
+  flex-direction:row-reverse;
+}
+.chat-avatar {
+  flex:0 0 28px;
+  width:28px;
+  height:28px;
+  display:grid;
+  place-items:center;
+  border-radius:50%;
+  background:#dfece6;
+  color:#557568;
+  font-size:9px;
+  font-weight:700;
+}
+.chat-message.user .chat-avatar {
+  background:#e9eef6;
+  color:#586b86;
+}
+.chat-bubble {
+  max-width:min(760px,calc(100% - 40px));
+  padding:14px 16px;
+  border:1px solid #e4d5b6;
+  border-radius:5px 13px 13px 13px;
+  background:#fff;
+  font-size:12px;
+  line-height:1.6;
+}
+.chat-message.user .chat-bubble {
+  border-color:#dce4ee;
+  border-radius:13px 5px 13px 13px;
+  background:#f5f8fc;
+}
+.chat-bubble h3 {
+  margin:0 0 7px;
+  font-size:13px;
+}
+.chat-bubble .action-card,.chat-bubble .setup-card,.chat-bubble .ask-group {
+  border:0;
+  padding:0;
+  margin:0;
+  background:transparent;
 }
 .action-card .what {
   font-size:13px
@@ -1301,7 +1395,8 @@ dialog::backdrop {
 <button id="btn-run" class="primary" disabled>Start task</button>
 <button id="btn-resume" class="primary" disabled>Continue task</button>
 <button id="btn-stop" class="danger" disabled>Stop task</button>
-<button id="btn-rerun" disabled>Start again</button></div>
+<button id="btn-rerun" disabled>Start again</button>
+<button id="btn-delete-task" class="danger" disabled>Delete task</button></div>
 <nav class="tabs" aria-label="Task sections">
 <button class="active" data-tab="plan" aria-current="page">Plan &amp; progress</button>
 <button data-tab="results">Results &amp; files</button>
@@ -1311,7 +1406,10 @@ dialog::backdrop {
 <span>This task needs a connection before it can start.</span>
 <button data-view="connections">Review setup →</button></div>
 <div class="panel" id="ask-panel" hidden>
-<h2>Your input is needed</h2>
+<h2>Task chat</h2>
+<p class="chat-intro">Your orchestrator pauses here when it needs a fact, connection, or approval. Answer once and it continues the same task.</p>
+<div id="chat-receipts"></div>
+<div id="task-setup-chat"></div>
 <div id="ask"></div>
     </div>
 <div class="overview-grid">
@@ -1351,6 +1449,19 @@ dialog::backdrop {
 <h2>Files created by agents</h2>
 <div id="workspace-files">
 <div class="empty">No files yet.</div></div>
+<div id="artifact-viewer" class="artifact-viewer" hidden>
+<div class="artifact-viewer-head">
+<div>
+<div class="eyebrow">Artifact viewer</div>
+<h3 id="artifact-title">Artifact</h3>
+<div id="artifact-location" class="artifact-location"></div>
+</div>
+<div class="row">
+<button id="artifact-download">Download</button>
+<button id="artifact-close">Close</button>
+</div></div>
+<pre id="artifact-content"></pre>
+</div>
     </div>
 <div class="panel">
 <h2>Download task report</h2>
@@ -1472,6 +1583,35 @@ dialog::backdrop {
   </div>
 <p class="ask-err" id="login-error"></p>
 </dialog>
+<dialog id="change-requirement-dialog" aria-labelledby="change-requirement-title">
+<form id="change-requirement-form">
+  <h2 id="change-requirement-title" style="margin-top:0">Change requirement</h2>
+  <p class="desc">Tell the agent what should be different. This step and every dependent step will be updated; unaffected work is kept.</p>
+  <div class="ask-field">
+    <label>Current step</label>
+    <div class="what" id="change-requirement-current"></div>
+  </div>
+  <div class="ask-field">
+    <label for="change-requirement-input">What needs to change?</label>
+    <textarea id="change-requirement-input" rows="4"
+      placeholder="For example: Use PostgreSQL instead of MongoDB" required></textarea>
+  </div>
+  <p class="ask-err" id="change-requirement-error" aria-live="polite"></p>
+  <div class="row">
+    <button class="primary" id="change-requirement-submit" type="submit">Apply change &amp; re-run</button>
+    <button id="change-requirement-cancel" type="button">Cancel</button>
+  </div>
+</form>
+</dialog>
+<dialog id="confirmation-dialog" aria-labelledby="confirmation-title">
+  <h2 id="confirmation-title" style="margin-top:0">Confirm action</h2>
+  <p class="desc" id="confirmation-message" style="white-space:pre-wrap"></p>
+  <pre id="confirmation-details" hidden></pre>
+  <div class="row">
+    <button class="primary" id="confirmation-accept" type="button">Continue</button>
+    <button id="confirmation-cancel" type="button">Cancel</button>
+  </div>
+</dialog>
 <div id="toast" role="alert" hidden>
 <span id="toast-message"></span>
 <button id="toast-close" aria-label="Dismiss notification">×</button></div>
@@ -1499,6 +1639,7 @@ let snapshot = null;
 let apiKey = sessionStorage.getItem("orchestrator_api_key") || "";
 let currentRole = "admin";
 let loginWaiter = null;
+let confirmationWaiter = null;
 
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
@@ -1742,7 +1883,7 @@ function renderSteps(state) {
   $("#steps").querySelectorAll("[data-delete]").forEach((b) =>
     b.addEventListener("click", () => deleteStep(b.dataset.delete)));
   $("#steps").querySelectorAll("[data-change]").forEach((b) =>
-    b.addEventListener("click", () => promptChange(b.dataset.change)));
+    b.addEventListener("click", () => openRequirementChange(b.dataset.change)));
   $("#steps").querySelectorAll("[data-pause]").forEach((b) =>
     b.addEventListener("click", () => act(`/api/runs/${runId}/steps/${b.dataset.pause}/pause`)));
   $("#steps").querySelectorAll("[data-approve]").forEach((b) =>
@@ -1823,25 +1964,82 @@ function renderTools(state) {
 function renderFiles(state) {
   const files = state.workspace_files || [];
   const host = $("#workspace-files");
+  const viewer = $("#artifact-viewer");
   if (!files.length) {
     host.innerHTML = '<div class="empty">No files yet.</div>';
+    viewer.hidden = true;
     return;
   }
-  host.innerHTML = files.map((file) => `<div class="row" style="margin:.35rem 0">
-    <button data-file="${esc(file.path)}">Download</button>
-    <span style="font-family:ui-monospace,monospace;font-size:.75rem">${esc(file.path)}</span>
+  const textFile = /\.(?:md|txt|json|csv|html?|ya?ml|log|py|js|ts|tsx|jsx|css|sql)$/i;
+  host.innerHTML = files.map((file) => `<div class="row artifact-file">
+    ${textFile.test(file.path) ? `<button data-preview-file="${esc(file.path)}">View</button>` : ""}
+    <button data-download-file="${esc(file.path)}">Download</button>
+    <span class="artifact-path">Stored at workspace/${esc(runId)}/${esc(file.path)}</span>
     <span class="meta">${file.size.toLocaleString()} bytes</span>
   </div>`).join("");
-  host.querySelectorAll("[data-file]").forEach((button) =>
-    button.addEventListener("click", () => downloadWorkspaceFile(button.dataset.file)));
+  host.querySelectorAll("[data-preview-file]").forEach((button) =>
+    button.addEventListener("click", () => viewWorkspaceFile(button.dataset.previewFile)));
+  host.querySelectorAll("[data-download-file]").forEach((button) =>
+    button.addEventListener("click", () => downloadWorkspaceFile(button.dataset.downloadFile)));
+  if (!files.some(file => file.path === viewer.dataset.path)) viewer.hidden = true;
+}
+
+function requestConfirmation({ title = "Confirm action", message = "", details = "",
+                               acceptLabel = "Continue", danger = false } = {}) {
+  if (confirmationWaiter) return Promise.resolve(false);
+  const dialog = $("#confirmation-dialog");
+  $("#confirmation-title").textContent = title;
+  $("#confirmation-message").textContent = message;
+  const detailBox = $("#confirmation-details");
+  detailBox.textContent = details;
+  detailBox.hidden = !details;
+  const accept = $("#confirmation-accept");
+  accept.textContent = acceptLabel;
+  accept.className = danger ? "danger" : "primary";
+  dialog.showModal();
+  accept.focus();
+  confirmationWaiter = new Promise((resolve) => { dialog._resolveConfirmation = resolve; });
+  return confirmationWaiter.finally(() => { confirmationWaiter = null; });
+}
+
+function finishConfirmation(accepted) {
+  const dialog = $("#confirmation-dialog");
+  dialog.close();
+  dialog._resolveConfirmation?.(accepted);
+  dialog._resolveConfirmation = null;
+}
+
+async function fetchWorkspaceFile(path) {
+  const response = await fetch(`/api/runs/${runId}/files/${encodeURIComponent(path)}`, {
+    headers: apiKey ? { "Authorization": `Bearer ${apiKey}` } : {},
+  });
+  if (!response.ok) {
+    let message = response.statusText;
+    try { message = (await response.json()).detail || message; } catch (_) {}
+    throw new Error(message);
+  }
+  return response;
+}
+
+async function viewWorkspaceFile(path) {
+  try {
+    const response = await fetchWorkspaceFile(path);
+    const viewer = $("#artifact-viewer");
+    $("#artifact-title").textContent = path.split("/").pop();
+    $("#artifact-location").textContent = `Stored at workspace/${runId}/${path}`;
+    $("#artifact-content").textContent = await response.text();
+    $("#artifact-download").dataset.path = path;
+    viewer.dataset.path = path;
+    viewer.hidden = false;
+    viewer.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } catch (err) {
+    log("file preview failed: " + err.message, "var(--failed)");
+  }
 }
 
 async function downloadWorkspaceFile(path) {
   try {
-    const response = await fetch(`/api/runs/${runId}/files/${encodeURIComponent(path)}`, {
-      headers: apiKey ? { "Authorization": `Bearer ${apiKey}` } : {},
-    });
-    if (!response.ok) throw new Error((await response.json()).detail || response.statusText);
+    const response = await fetchWorkspaceFile(path);
     const blob = await response.blob();
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -2012,6 +2210,56 @@ function renderRequirements(state) {
 // --- guided setup: explain what's missing and how to get it ---------------
 
 let setupSignature = null;
+let taskSetupSignature = null;
+let chatReceipts = [];
+
+function addChatReceipt(message) {
+  chatReceipts.push(message);
+  chatReceipts = chatReceipts.slice(-6);
+  $("#chat-receipts").innerHTML = chatReceipts.map(item => `
+    <div class="chat-message user">
+      <span class="chat-avatar">YOU</span>
+      <div class="chat-bubble">${esc(item)}</div>
+    </div>`).join("");
+  if (runId) $("#ask-panel").hidden = false;
+}
+
+function renderTaskSetupQuestions(data) {
+  if (!runId) return;
+  const questions = data.questions || [];
+  const signature = JSON.stringify([runId, questions]);
+  if (signature === taskSetupSignature) return;
+  taskSetupSignature = signature;
+  const host = $("#task-setup-chat");
+  host.innerHTML = questions.map(q => {
+    const id = `chat-cred-${q.env_var}`;
+    const err = `${id}-err`;
+    const why = q.why_this_workflow
+      ? `<span class="why">Why this task needs it: ${esc(q.why_this_workflow)}</span>` : "";
+    const link = q.url
+      ? `<a class="getlink" href="${esc(q.url)}" target="_blank" rel="noopener">Get it here →</a>` : "";
+    return `<div class="chat-message agent">
+      <span class="chat-avatar">AI</span>
+      <div class="chat-bubble">
+        <h3>I need ${esc(q.label)}</h3>
+        <p class="desc">${esc(q.description)}</p>${why}${link}
+        <div class="row">
+          <input id="${id}" type="${q.secret ? "password" : "text"}"
+                 placeholder="${esc(q.placeholder || "Paste or enter it here")}" class="grow"
+                 aria-label="${esc(q.label)}">
+          <button class="primary" data-chat-save="${esc(q.env_var)}"
+                  data-input-id="${id}" data-error-id="${err}">Save &amp; continue</button>
+        </div>
+        <div class="ask-err" id="${err}"></div>
+      </div></div>`;
+  }).join("");
+  host.querySelectorAll("[data-chat-save]").forEach(button =>
+    button.addEventListener("click", () => saveCredential(
+      button.dataset.chatSave, button.dataset.inputId, button.dataset.errorId, true)));
+  const hasPending = snapshot && (Object.keys(snapshot.pending_inputs || {}).length
+    || Object.keys(snapshot.pending_actions || {}).length);
+  $("#ask-panel").hidden = !(questions.length || hasPending || chatReceipts.length);
+}
 
 async function refreshSetup() {
   let data;
@@ -2020,6 +2268,8 @@ async function refreshSetup() {
   } catch (err) {
     return;
   }
+
+  renderTaskSetupQuestions(data);
 
   const signature = JSON.stringify([runId, data.questions]);
   if (signature === setupSignature) return;   // don't wipe what's being typed
@@ -2083,9 +2333,10 @@ function cardFor(q) {
   </div>`;
 }
 
-async function saveCredential(envVar) {
-  const input = document.getElementById(`cred-${envVar}`);
-  const errBox = document.getElementById(`cred-${envVar}-err`);
+async function saveCredential(envVar, inputId = `cred-${envVar}`,
+                              errorId = `cred-${envVar}-err`, fromChat = false) {
+  const input = document.getElementById(inputId);
+  const errBox = document.getElementById(errorId);
   errBox.textContent = "";
   const value = (input.value || "").trim();
   if (!value) { errBox.textContent = "Paste the value first."; return; }
@@ -2096,9 +2347,12 @@ async function saveCredential(envVar) {
     });
     log(`saved ${envVar} — now using ${result.llm_mode}`, "var(--done)");
     input.value = "";
+    if (fromChat) addChatReceipt(`${envVar} was supplied securely. Its value is not shown in chat.`);
     setupSignature = null;            // force a rebuild; this one is answered
+    taskSetupSignature = null;
     await refreshSetup();
     await refreshHealth();
+    if (runId) render(await api(`/api/runs/${runId}`));
   } catch (err) {
     errBox.textContent = err.message;  // server-side validation is authoritative
   }
@@ -2142,11 +2396,62 @@ function fieldFor(stepId, req) {
 
 let askSignature = null;
 
+function emailActionBlock(stepId, action) {
+  const email = action.email || {};
+  const message = email.message || {};
+  const status = email.status || "choose_method";
+  let instruction = "Open Gmail to compose this exact message. Nothing is sent yet.";
+  let primary = "";
+
+  if (status === "sent" && email.reviewed_digest === email.digest) {
+    instruction = "This exact email was already sent. Finish the task without opening Gmail or sending it again.";
+    primary = `<button class="primary" data-approve-action="${esc(stepId)}"
+                       data-tool="adaptive_email">Finish task</button>`;
+  } else if (email.browser_available) {
+    if (status === "draft_ready") {
+      instruction = "The Gmail draft is ready. Review it in the browser, then send the exact message below.";
+      primary = `<button class="primary" data-approve-action="${esc(stepId)}"
+                         data-tool="adaptive_email">Send reviewed email</button>`;
+    } else if (status === "sign_in_needed") {
+      instruction = "Sign in to Gmail in the opened browser, then let me prepare the draft. Nothing will be sent.";
+      primary = `<button class="primary" data-prepare-email="${esc(stepId)}">Prepare Gmail draft</button>`;
+    } else {
+      if (email.stale_draft) {
+        instruction = "The email changed after the previous draft was reviewed. Open Gmail again to prepare this exact version.";
+      }
+      primary = `<button class="primary" data-open-email="${esc(stepId)}"
+                         data-digest="${esc(email.digest || "")}">Open Gmail</button>`;
+    }
+  } else if (email.api_available) {
+    instruction = "The Gmail browser is unavailable, so the configured email connection is the fallback.";
+    primary = `<button class="primary" data-approve-action="${esc(stepId)}"
+                       data-tool="adaptive_email">Send reviewed email</button>`;
+  } else {
+    instruction = "The Gmail browser is not connected. Restart the project so its browser tools can load.";
+    primary = `<button disabled>Gmail browser unavailable</button>`;
+  }
+
+  return `<div class="chat-message agent">
+    <span class="chat-avatar">AI</span>
+    <div class="chat-bubble"><div class="action-card">
+      <h3 style="margin:0;font-size:.8rem">${esc(stepId)} — email review</h3>
+      <p class="desc">${esc(instruction)}</p>
+      <div class="what"><b>To:</b> ${esc(message.to || "(missing recipient)")}<br>
+        <b>Subject:</b> ${esc(message.subject || "(no subject)")}</div>
+      <pre>${esc(message.body || "")}</pre>
+      <div class="row" style="margin-top:.5rem">
+        ${primary}
+        <button class="danger" data-reject-action="${esc(stepId)}">Reject</button>
+      </div>
+    </div></div></div>`;
+}
+
 function renderAsk(state) {
   const inputs = state.pending_inputs || {};
   const actions = state.pending_actions || {};
   const hasWork = Object.keys(inputs).length || Object.keys(actions).length;
-  $("#ask-panel").hidden = !hasWork;
+  const hasSetup = $("#task-setup-chat").childElementCount > 0;
+  $("#ask-panel").hidden = !(hasWork || hasSetup || chatReceipts.length);
   if (!hasWork) { $("#ask").innerHTML = ""; askSignature = null; return; }
 
   // Snapshots arrive continuously over the WebSocket. Re-rendering on every
@@ -2160,15 +2465,22 @@ function renderAsk(state) {
   askSignature = signature;
 
   const inputBlocks = Object.entries(inputs).map(([stepId, reqs]) => `
-    <div class="ask-group" data-step="${esc(stepId)}">
+    <div class="chat-message agent">
+    <span class="chat-avatar">AI</span>
+    <div class="chat-bubble"><div class="ask-group" data-step="${esc(stepId)}">
       <h3>${esc(friendly(stepId))}</h3>
+      <p class="desc">I need a little more information before this step can continue.</p>
       ${reqs.map(r => fieldFor(stepId, r)).join("")}
       <button class="primary" data-submit="${esc(stepId)}">Submit &amp; continue</button>
-    </div>`).join("");
+    </div></div></div>`).join("");
 
-  const actionBlocks = Object.entries(actions).map(([stepId, a]) => `
-    <div class="action-card">
+  const actionBlocks = Object.entries(actions).map(([stepId, a]) =>
+    a.tool === "adaptive_email" ? emailActionBlock(stepId, a) : `
+    <div class="chat-message agent">
+    <span class="chat-avatar">AI</span>
+    <div class="chat-bubble"><div class="action-card">
       <h3 style="margin:0;font-size:.8rem">${esc(stepId)} — approval needed</h3>
+      <p class="desc">I’m ready to act, but I need you to review the exact operation first.</p>
       <div class="what"><b>${esc(a.tool)}</b>${a.irreversible ? " · irreversible" : ""}<br>
         ${esc(a.preview)}</div>
       <pre>${esc(a.payload_preview || "")}</pre>
@@ -2177,7 +2489,7 @@ function renderAsk(state) {
                 data-tool="${esc(a.tool || "")}">Approve action</button>
         <button class="danger" data-reject-action="${esc(stepId)}">Reject</button>
       </div>
-    </div>`).join("");
+    </div></div></div>`).join("");
 
   $("#ask").innerHTML = inputBlocks + actionBlocks;
 
@@ -2186,10 +2498,38 @@ function renderAsk(state) {
   $("#ask").querySelectorAll("[data-approve-action]").forEach(btn =>
     btn.addEventListener("click", () => approveAction(btn.dataset.approveAction,
                                                       btn.dataset.tool || "")));
+  $("#ask").querySelectorAll("[data-open-email]").forEach(btn =>
+    btn.addEventListener("click", () => openEmailBrowser(btn.dataset.openEmail,
+                                                         btn.dataset.digest || "")));
+  $("#ask").querySelectorAll("[data-prepare-email]").forEach(btn =>
+    btn.addEventListener("click", () => prepareEmailDraft(btn.dataset.prepareEmail)));
   $("#ask").querySelectorAll("[data-reject-action]").forEach(btn =>
-    btn.addEventListener("click", () =>
-      act(`/api/runs/${runId}/actions/${btn.dataset.rejectAction}/reject`, {
-        method: "POST", body: JSON.stringify({ reason: "rejected from the dashboard" }) })));
+    btn.addEventListener("click", async () => {
+      const result = await act(`/api/runs/${runId}/actions/${btn.dataset.rejectAction}/reject`, {
+        method: "POST", body: JSON.stringify({ reason: "rejected from the dashboard" }) });
+      if (result) addChatReceipt(`Rejected the requested action for ${friendly(btn.dataset.rejectAction)}.`);
+    }));
+}
+
+async function openEmailBrowser(stepId, digest) {
+  const confirmed = await requestConfirmation({
+    title: "Open Gmail?",
+    message: "The orchestrator will open Gmail for this message. Nothing will be sent yet.",
+    acceptLabel: "Open Gmail",
+  });
+  if (!confirmed) return;
+  const result = await act(`/api/runs/${runId}/email/${stepId}/open-browser`, {
+    method: "POST",
+    body: JSON.stringify({ approved: true, digest }),
+  });
+  if (result) addChatReceipt("Gmail opened. Sign in if needed, then click Prepare Gmail draft.");
+}
+
+async function prepareEmailDraft(stepId) {
+  const result = await act(`/api/runs/${runId}/email/${stepId}/prepare-browser`, {
+    method: "POST",
+  });
+  if (result) addChatReceipt("The Gmail draft is ready. Review it in Gmail before sending.");
 }
 
 // Sending mail is approved against a digest of the exact message, so that
@@ -2198,18 +2538,36 @@ function renderAsk(state) {
 // digest -- approving something the server has since changed should fail.
 async function approveAction(stepId, tool) {
   const path = `/api/runs/${runId}/actions/${stepId}/approve`;
-  if (tool !== "adaptive_email") return act(path);
+  if (tool !== "adaptive_email") {
+    const result = await act(path);
+    if (result) addChatReceipt(`Approved ${friendly(tool)} for ${friendly(stepId)}.`);
+    return result;
+  }
 
   try {
     const email = await api(`/api/runs/${runId}/email/${stepId}`);
-    const to = email.to || email.recipient || "(no recipient)";
-    if (!confirm(`Send this email?\n\nTo: ${to}\nSubject: ${email.subject || "(none)"}\n\n`
-                 + `${(email.body || "").slice(0, 400)}`)) return;
-    return await act(path, {
+    const message = email.message || {};
+    const to = message.to || "(no recipient)";
+    const alreadySent = email.status === "sent" && email.reviewed_digest === email.digest;
+    const confirmed = await requestConfirmation({
+      title: alreadySent ? "Finish this task?" : "Send this email?",
+      message: alreadySent
+        ? "This exact email is already recorded as sent. Finishing will not send it again."
+        : "This action is irreversible. Review the exact message before sending.",
+      details: `To: ${to}\nSubject: ${message.subject || "(none)"}\n\n${(message.body || "").slice(0, 400)}`,
+      acceptLabel: alreadySent ? "Finish task" : "Send email",
+      danger: !alreadySent,
+    });
+    if (!confirmed) return;
+    const result = await act(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ approved: true, digest: email.digest }),
     });
+    if (result) addChatReceipt(alreadySent
+      ? `Finished ${friendly(stepId)} without sending a duplicate email.`
+      : `Approved the reviewed email for ${friendly(stepId)}.`);
+    return result;
   } catch (err) {
     log(`could not approve the email: ${err.message}`, "var(--danger)");
   }
@@ -2229,6 +2587,9 @@ async function submitInputs(stepId, inputs) {
     log(`inputs supplied for ${stepId}` +
         (result.still_pending.length ? `, still need: ${result.still_pending.join(", ")}` : ""),
         "var(--done)");
+    addChatReceipt(`Answered ${friendly(stepId)}${result.still_pending.length
+      ? "; it still needs " + result.still_pending.map(friendly).join(", ")
+      : "; the task can continue"}.`);
   } catch (err) {
     // Server-side validation is authoritative; surface it on the field.
     const match = /'([^']+)'/.exec(err.message);
@@ -2256,6 +2617,7 @@ function render(state) {
   refreshSetup();
   const has = Boolean(runId);
   ["#btn-run", "#btn-rerun", "#btn-resume"].forEach((id) => { $(id).disabled = !has || state.busy; });
+  $("#btn-delete-task").disabled = !has || state.busy || currentRole === "viewer";
   $("#btn-stop").disabled = !has || !state.busy || state.cancellation_requested;
   $("#btn-stop").textContent = state.cancellation_requested ? "Stopping…" : "Stop task";
   syncTaskControls(state);
@@ -2386,8 +2748,15 @@ async function deleteStep(stepId) {
   const step = snapshot.steps.find(s => s.id === stepId);
   const dependents = snapshot.steps.filter(s => s.depends_on.includes(stepId)).map(s => s.id);
   const warning = dependents.length
-    ? `\n\n${dependents.join(", ")} depend on it and will need to re-run.` : "";
-  if (!window.confirm(`Delete step "${stepId}"?${warning}`)) return;
+    ? `${dependents.map(friendly).join(", ")} depend on it and will need to re-run.`
+    : "This step has no dependent steps.";
+  const confirmed = await requestConfirmation({
+    title: `Delete ${friendly(stepId)}?`,
+    message: warning,
+    acceptLabel: "Delete step",
+    danger: true,
+  });
+  if (!confirmed) return;
   await act(`/api/runs/${runId}/steps/${stepId}`, { method: "DELETE" });
   log(`deleted ${stepId}`, "var(--paused)");
   render(await api(`/api/runs/${runId}`));
@@ -2436,6 +2805,10 @@ function startNewWorkflow() {
   snapshot = null;
   askSignature = null;
   setupSignature = null;
+  taskSetupSignature = null;
+  chatReceipts = [];
+  $("#chat-receipts").innerHTML = "";
+  $("#task-setup-chat").innerHTML = "";
   $("#ws-state").textContent = "Ready";
   $("#ws-state").className = "pill";
   $("#desc").value = "";
@@ -2452,7 +2825,7 @@ function startNewWorkflow() {
   $("#progress-fill").style.width = "0%";
   $("#progress-note").textContent = "No workflow selected";
   $("#run-picker").value = "";
-  ["#btn-run", "#btn-rerun", "#btn-resume", "#btn-stop"].forEach(id => { $(id).disabled = true; });
+  ["#btn-run", "#btn-rerun", "#btn-resume", "#btn-stop", "#btn-delete-task"].forEach(id => { $(id).disabled = true; });
   showView("home");
   renderRunLists();
   $("#desc").focus();
@@ -2460,17 +2833,25 @@ function startNewWorkflow() {
   refreshSetup();
 }
 
-async function promptChange(stepId) {
+let requirementChangeStepId = null;
+
+function openRequirementChange(stepId) {
   const step = snapshot?.steps.find((s) => s.id === stepId);
-  const next = window.prompt(
-    `New requirement for "${stepId}".\n\nCurrent: ${step ? step.description : ""}`,
-    "");
-  if (next === null || !next.trim()) return;
-  log(`change requested on ${stepId}`, "var(--accent)");
-  await act(`/api/runs/${runId}/steps/${stepId}/change`, {
-    method: "POST",
-    body: JSON.stringify({ new_requirement: next.trim() }),
-  });
+  if (!step) { notifyError("That step is no longer available. Refresh the task and try again."); return; }
+
+  requirementChangeStepId = stepId;
+  $("#change-requirement-title").textContent = `Change ${friendly(stepId)}`;
+  $("#change-requirement-current").textContent = step.description || "No description";
+  $("#change-requirement-input").value = "";
+  $("#change-requirement-error").textContent = "";
+  $("#change-requirement-submit").disabled = false;
+  $("#change-requirement-dialog").showModal();
+  $("#change-requirement-input").focus();
+}
+
+function closeRequirementChange() {
+  requirementChangeStepId = null;
+  $("#change-requirement-dialog").close();
 }
 
 function connect(id) {
@@ -2505,6 +2886,10 @@ async function selectRun(id) {
   runId = id;
   askSignature = null;
   setupSignature = null;
+  taskSetupSignature = null;
+  chatReceipts = [];
+  $("#chat-receipts").innerHTML = "";
+  $("#task-setup-chat").innerHTML = "";
   $("#steps").innerHTML = "";
   $("#new-webhook-url").innerHTML = "";
   $("#run-picker").value = id;
@@ -2657,6 +3042,28 @@ $("#btn-stop").addEventListener("click", async () => {
   if (result) {
     log(result.message, "var(--paused)");
     render(await api(`/api/runs/${runId}`));
+  }
+});
+$("#btn-delete-task").addEventListener("click", async () => {
+  if (!runId || !snapshot) return;
+  const deleting = runId;
+  const title = snapshot.description || "Untitled task";
+  const approved = await requestConfirmation({
+    title: "Delete this task?",
+    message: "This permanently removes the task, its plan, activity, approvals, and saved run history from the dashboard. Generated workspace files are kept on disk.",
+    details: title,
+    acceptLabel: "Delete task",
+    danger: true,
+  });
+  if (!approved || runId !== deleting) return;
+  try {
+    await api(`/api/runs/${deleting}`, {method: "DELETE"});
+    startNewWorkflow();
+    await refreshRuns();
+    showView("tasks");
+    log(`deleted task: ${title}`, "var(--done)");
+  } catch (err) {
+    notifyError(`Could not delete task: ${err.message}`);
   }
 });
 $("#btn-new").addEventListener("click", startNewWorkflow);
@@ -2812,6 +3219,7 @@ function syncTaskControls(state) {
   $("#btn-resume").hidden = initial || complete || state.busy || !!waiting;
   $("#btn-stop").hidden = !state.busy;
   $("#btn-rerun").hidden = initial || state.busy;
+  $("#btn-delete-task").hidden = state.busy || currentRole === "viewer";
   $("#btn-add-step").disabled = state.busy || currentRole === "viewer";
   $("#ask-panel").setAttribute("aria-live", "polite");
 }
@@ -2823,11 +3231,48 @@ syncMobileNavigation();
 document.querySelectorAll("[data-view]").forEach(el => el.addEventListener("click", () => showView(el.dataset.view)));
 document.querySelectorAll("[data-tab]").forEach(el => el.addEventListener("click", () => setTaskTab(el.dataset.tab)));
 $("#task-search").addEventListener("input", renderRunLists);
+$("#artifact-close").addEventListener("click", () => { $("#artifact-viewer").hidden = true; });
+$("#artifact-download").addEventListener("click", e => {
+  if (e.currentTarget.dataset.path) downloadWorkspaceFile(e.currentTarget.dataset.path);
+});
 $("#toast-close").addEventListener("click", () => { $("#toast").hidden = true; });
 $("#menu-toggle").addEventListener("click", () => { const opened = $("#sidebar").classList.toggle("open"); $("#menu-toggle").setAttribute("aria-expanded", String(opened)); syncMobileNavigation(); if (opened) $("#btn-new").focus(); });
 document.addEventListener("keydown", e => { if (e.key === "Escape" && $("#sidebar").classList.contains("open")) { $("#sidebar").classList.remove("open"); $("#menu-toggle").setAttribute("aria-expanded", "false"); syncMobileNavigation(); $("#menu-toggle").focus(); } });
 $("#main-content").addEventListener("click", () => { $("#sidebar").classList.remove("open"); $("#menu-toggle").setAttribute("aria-expanded", "false"); syncMobileNavigation(); });
 $("#login-dialog").addEventListener("cancel", () => { $("#login-dialog")._resolveLogin?.(false); });
+$("#confirmation-accept").addEventListener("click", () => finishConfirmation(true));
+$("#confirmation-cancel").addEventListener("click", () => finishConfirmation(false));
+$("#confirmation-dialog").addEventListener("cancel", () => {
+  $("#confirmation-dialog")._resolveConfirmation?.(false);
+  $("#confirmation-dialog")._resolveConfirmation = null;
+});
+$("#change-requirement-cancel").addEventListener("click", closeRequirementChange);
+$("#change-requirement-dialog").addEventListener("cancel", () => {
+  requirementChangeStepId = null;
+});
+$("#change-requirement-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const stepId = requirementChangeStepId;
+  const requirement = $("#change-requirement-input").value.trim();
+  const error = $("#change-requirement-error");
+  if (!stepId) { error.textContent = "The step is no longer selected. Close this window and try again."; return; }
+  if (!requirement) { error.textContent = "Describe what should change before continuing."; return; }
+
+  error.textContent = "";
+  $("#change-requirement-submit").disabled = true;
+  log(`change requested on ${stepId}`, "var(--accent)");
+  const result = await act(`/api/runs/${runId}/steps/${stepId}/change`, {
+    method: "POST",
+    body: JSON.stringify({ new_requirement: requirement }),
+  });
+  if (result) {
+    addChatReceipt(`Updated the requirement for ${friendly(stepId)}. Affected work is being re-run.`);
+    closeRequirementChange();
+  } else {
+    $("#change-requirement-submit").disabled = false;
+    error.textContent = "The change could not be applied. Check the error message and try again.";
+  }
+});
 const examplePrompts = {
   app:"Build a task management web app with login, a Kanban board, and tests.",
   research:"Research the benefits and limitations of AI agents in software development and write a concise report with sources.",

@@ -169,28 +169,55 @@ class ArtifactStoreTool(Tool):
     """Always-live terminal fallback for the ``vcs`` chain: write to disk.
 
     Never fails for credential reasons, so a workflow can always land its
-    output somewhere durable even when every remote service is down.
+    output somewhere durable even when every remote service is down. Files
+    live inside the run workspace so the dashboard can list and download them.
     """
 
     name = "artifact_store"
     capability = "vcs"
-    description = "Persist step output to the local artifacts/ directory"
+    description = "Persist step output to this run's local artifacts/ directory"
     fallbacks: List[str] = []
     side_effect = True
     irreversible = False  # writes a local file; safe and reversible
+
+    def __init__(self, run_id: str = "default", root: Optional[Path] = None) -> None:
+        super().__init__()
+        from .workspace import DEFAULT_WORKSPACE_ROOT, workspace_for
+
+        self.workspace = workspace_for(run_id, root or DEFAULT_WORKSPACE_ROOT)
 
     def is_live(self) -> bool:
         return True
 
     def _run(self, task: str, context: Optional[dict] = None) -> str:
         step_id = (context or {}).get("step_id", "step")
-        ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-        path = ARTIFACT_DIR / f"{_slug(str(step_id))}-{int(time.time())}.md"
+        artifact_dir = self.workspace / "artifacts"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        directive = _directive(task)
+        arguments = directive.get("arguments", directive)
+        arguments = arguments if isinstance(arguments, dict) else {}
+        requested = str(arguments.get("path") or "").replace("\\", "/").strip()
+        if requested:
+            if requested.startswith("/") or re.match(r"^[a-zA-Z]:", requested):
+                raise ToolError("artifact path must be relative to the run workspace")
+            parts = [part for part in requested.split("/") if part not in {"", "."}]
+            if parts and parts[0].lower() == "artifacts":
+                parts = parts[1:]
+            if not parts or ".." in parts:
+                raise ToolError("artifact path must stay inside artifacts/")
+            path = artifact_dir.joinpath(*parts)
+        else:
+            path = artifact_dir / f"{_slug(str(step_id))}-{int(time.time())}.md"
+        content = arguments.get("content")
+        if content is None:
+            content = re.sub(r"TOOL_DIRECTIVE:.*$", "", task,
+                             flags=re.MULTILINE | re.DOTALL).strip()
+        path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            path.write_text(task, encoding="utf-8")
+            path.write_text(str(content), encoding="utf-8")
         except OSError as exc:
             raise ToolError(f"could not write artifact: {exc}") from exc
-        return f"[artifact_store] written to {path.relative_to(PROJECT_ROOT)}"
+        return f"[artifact_store] written to {path.relative_to(self.workspace)}"
 
 
 # ---------------------------------------------------------------------------

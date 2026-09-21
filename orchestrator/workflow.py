@@ -51,7 +51,7 @@ from .models import (
 from .requirements import RequirementsReport, infer_requirements
 from .skills import DEFAULT_SKILLS_DIR, SkillLibrary
 from .state import StateManager
-from .tools import ToolManager, ToolUnavailableError, default_tool_manager
+from .tools import ActionReviewRequiredError, ToolManager, ToolUnavailableError, default_tool_manager
 
 
 class ApprovalRequired(RuntimeError):
@@ -209,6 +209,10 @@ class Workflow:
             # Hand it the model so it can find things on screen by description
             # rather than needing coordinates worked out in advance.
             self.tools.register(DesktopTool(self.run_id, llm=self.llm))
+        from .tools.builtin import ArtifactStoreTool
+
+        if isinstance(self.tools.get("artifact_store"), ArtifactStoreTool):
+            self.tools.register(ArtifactStoreTool(self.run_id))
         from .planner import is_software_task
         if is_software_task(self.description):
             from .tools.workspace import coding_team_tools
@@ -980,7 +984,11 @@ class Workflow:
                          role=step.agent_role, tool=step.requires_tool)
 
         agent = self.agents.get(step.agent_role)
-        context = self.memory.build_context(step, self.graph)
+        # An archiver must receive the complete deliverable it persists. The
+        # ordinary context cap is useful for reasoning agents, but truncating a
+        # report before artifact_store writes it creates a corrupt artifact.
+        context_budget = 8000 if step.requires_tool == "artifact_store" else None
+        context = self.memory.build_context(step, self.graph, char_budget=context_budget)
         if self.change_aware and self.graph.facts:
             from .change_aware import fact_context
             context += fact_context(self.graph.facts, step.output_type)
@@ -1120,6 +1128,27 @@ class Workflow:
         try:
             invocation = agent.call_tool(step, action.tool, action.payload, self.tools,
                                          self.all_input_values())
+        except ActionReviewRequiredError as exc:
+            # Verification failed before an irreversible action happened. Keep
+            # the frozen payload and return it to human review; regenerating it
+            # would waste an LLM call and could change what was approved.
+            result.status = StepStatus.AWAITING_ACTION
+            result.error = str(exc)
+            result.error_class = None
+            result.ended_at = time.time()
+            with self._lock:
+                self.results[action.step_id] = result
+                report.awaiting_action.append(action.step_id)
+                self._approved_actions.discard(action.step_id)
+            if self.state is not None:
+                self.state.save_pending_action(self.run_id, action)
+            self._persist(result)
+            self.bus.publish(
+                EventType.ACTION_AWAITING_APPROVAL, run_id=self.run_id,
+                step_id=action.step_id,
+                message=f"action needs review again: {exc}",
+                **action.to_dict(include_step_id=False))
+            return result
         except Exception as exc:  # noqa: BLE001 - a failed action is a failed step
             result.status = StepStatus.FAILED
             result.error = str(exc)
@@ -1129,6 +1158,10 @@ class Workflow:
                 self.results[action.step_id] = result
                 report.failed.append(action.step_id)
                 self._pending_actions.pop(action.step_id, None)
+                # Approval authorises one frozen payload exactly once.  A
+                # failed attempt must return to review; otherwise Resume can
+                # regenerate and retry an irreversible action without asking.
+                self._approved_actions.discard(action.step_id)
             if self.state is not None:
                 self.state.delete_pending_action(self.run_id, action.step_id)
             self._persist(result)
@@ -1151,6 +1184,7 @@ class Workflow:
             self.results[action.step_id] = result
             report.executed.append(action.step_id)
             self._pending_actions.pop(action.step_id, None)
+            self._approved_actions.discard(action.step_id)
         if self.state is not None:
             self.state.delete_pending_action(self.run_id, action.step_id)
         self._persist(result)

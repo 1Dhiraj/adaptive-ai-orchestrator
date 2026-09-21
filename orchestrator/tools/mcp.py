@@ -116,6 +116,8 @@ def load_mcp_config(path: str = ".mcp.json") -> List[McpServerSpec]:
                 capability=entry.get("capability"),
                 fallbacks=entry.get("fallbacks", []),
                 tool_prefix=entry.get("tool_prefix", ""),
+                connect_timeout_s=float(entry.get("connect_timeout_s", _DEFAULT_CONNECT_TIMEOUT_S)),
+                call_timeout_s=float(entry.get("call_timeout_s", _DEFAULT_CALL_TIMEOUT_S)),
             ))
         else:
             specs.append(McpServerSpec(
@@ -128,6 +130,8 @@ def load_mcp_config(path: str = ".mcp.json") -> List[McpServerSpec]:
                 capability=entry.get("capability"),
                 fallbacks=entry.get("fallbacks", []),
                 tool_prefix=entry.get("tool_prefix", ""),
+                connect_timeout_s=float(entry.get("connect_timeout_s", _DEFAULT_CONNECT_TIMEOUT_S)),
+                call_timeout_s=float(entry.get("call_timeout_s", _DEFAULT_CALL_TIMEOUT_S)),
             ))
     return specs
 

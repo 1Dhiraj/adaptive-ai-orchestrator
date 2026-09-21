@@ -106,13 +106,23 @@ class Requirement:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Requirement":
+        name = str(data.get("name", "")).strip()
         kind = data.get("kind", "tool")
         try:
             kind_enum = RequirementKind(kind)
         except ValueError:
             kind_enum = RequirementKind.TOOL
+        # Models often call language runtimes "packages" even though they are
+        # executables. Checking ``import python`` then falsely reports that the
+        # already-running interpreter is missing and asks the user to install
+        # it. Normalise only unambiguous runtime names; real libraries remain
+        # package requirements.
+        if kind_enum is RequirementKind.PACKAGE and name.lower() in {
+            "python", "python3", "node", "nodejs", "npm", "git",
+        }:
+            kind_enum = RequirementKind.BINARY
         return cls(
-            name=str(data.get("name", "")).strip(),
+            name=name,
             kind=kind_enum,
             why=str(data.get("why", "")).strip(),
             needed_by=list(data.get("needed_by") or []),
