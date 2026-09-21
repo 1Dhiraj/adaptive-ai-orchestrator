@@ -123,7 +123,42 @@ class ComputerUsePlan:
                 "time_limit_s": self.time_limit_s}
 
 
-def _parse_plan(task: str) -> ComputerUsePlan:
+def _looks_like_web_target(target: str) -> bool:
+    candidate = (target or "").strip().lower()
+    if not candidate or candidate.endswith(".exe"):
+        return False
+    if candidate == "localhost" or re.match(r"^https?://", candidate):
+        return True
+    return bool(
+        re.fullmatch(r"(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?", candidate)
+        or re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?", candidate)
+    )
+
+
+def _plan_from_description(description: str) -> ComputerUsePlan:
+    """Compile a narrow safe plan when a model omits its directive."""
+    text = (description or "").strip()
+    lowered = text.lower()
+    target = next((entry for entry in sorted(allowed_targets(), key=len, reverse=True)
+                   if re.search(rf"(?<![a-z0-9]){re.escape(entry)}(?![a-z0-9])", lowered)), "")
+    if not target:
+        return ComputerUsePlan(goal=text[:300])
+
+    actions: List[str] = []
+    if re.search(r"(?i)\b(?:open|launch|start)\b", text):
+        actions.append("open the page" if _looks_like_web_target(target) else "launch the app")
+    typed = re.search(
+        r"(?i)\b(?:type|write|enter)\s+(?:the\s+text\s+)?"
+        r"(?:'([^']*)'|\"([^\"]*)\"|(.+?))"
+        r"(?:\s+(?:in|into)\b|[.;]|$)", text)
+    if typed and not _looks_like_web_target(target):
+        value = next((part for part in typed.groups() if part is not None), "").strip()
+        if value:
+            actions.append(f"type {json.dumps(value)}")
+    return ComputerUsePlan(goal=text[:300], targets=[target], actions=actions)
+
+
+def _parse_plan(task: str, context: Optional[dict] = None) -> ComputerUsePlan:
     """Read the agent's TOOL_DIRECTIVE into a plan, tolerating a missing one."""
     match = re.search(r"TOOL_DIRECTIVE:\s*(\{.*\})\s*$", task or "", re.S | re.M)
     payload: Dict[str, Any] = {}
@@ -140,13 +175,22 @@ def _parse_plan(task: str) -> ComputerUsePlan:
     actions = payload.get("actions") or []
     if isinstance(actions, str):
         actions = [actions]
-    return ComputerUsePlan(
+    plan = ComputerUsePlan(
         goal=goal[:300],
         targets=[str(t).strip().lower() for t in targets if str(t).strip()],
         actions=[str(a).strip() for a in actions if str(a).strip()],
         max_steps=int(payload.get("max_steps") or _DEFAULT_MAX_STEPS),
         time_limit_s=float(payload.get("time_limit_s") or _DEFAULT_TIME_LIMIT_S),
     )
+    if (not plan.targets or not plan.actions) and context:
+        fallback = _plan_from_description(str(context.get("step_description") or ""))
+        if not plan.targets:
+            plan.targets = fallback.targets
+        if not plan.actions:
+            plan.actions = fallback.actions
+        if not plan.goal:
+            plan.goal = fallback.goal
+    return plan
 
 
 def _browser_url(target: str, actions: List[str], goal: str = "") -> str:
@@ -264,9 +308,9 @@ def _native_action_spec(action: str, target: str) -> dict:
     if re.search(r"(?i)\b(?:list|show) (?:the )?windows\b", text):
         return {"action": "windows"}
     if re.search(r"(?i)^\s*(?:launch|open|start)\b", text):
-        named = re.sub(r"(?i)^\s*(?:launch|open|start)\s+(?:the\s+)?", "", text).strip(" .")
-        app = window if named.lower() in {"", "app", "application", "program", "window"} else named
-        return {"action": "launch", "app": app}
+        # ``window`` was already approved against the allow-list. Model prose
+        # such as "open the Notepad application" is not an executable name.
+        return {"action": "launch", "app": window}
     focused = re.search(r"(?i)^\s*(?:focus|activate|bring forward)\s*(.*)$", text)
     if focused:
         return {"action": "focus", "window": focused.group(1).strip(" .") or window}
@@ -392,8 +436,14 @@ class ComputerUseTool(Tool):
                 return candidate
         return None
 
-    def backend(self) -> str:
-        """Which backend would run this, browser preferred."""
+    def backend(self, targets: Optional[List[str]] = None) -> str:
+        """Choose a backend that matches the approved targets."""
+        if targets:
+            if all(_looks_like_web_target(target) for target in targets):
+                return self._browser_backend() or self._desktop_backend() or "none"
+            # Bare app names such as ``notepad`` are never browser targets,
+            # even when Playwright is also connected.
+            return self._desktop_backend() or "none"
         return self._browser_backend() or self._desktop_backend() or "none"
 
     def is_live(self) -> bool:
@@ -413,8 +463,8 @@ class ComputerUseTool(Tool):
             "ask the person to enter it themselves.")
 
     def preview(self, task: str, context: Optional[dict] = None) -> str:
-        plan = _parse_plan(task)
-        plan.backend = self.backend()
+        plan = _parse_plan(task, context)
+        plan.backend = self.backend(plan.targets)
         mode = "REAL" if self.is_live() else "simulated"
         return f"computer_use [{mode}]\n{plan.describe()}"
 
@@ -431,8 +481,8 @@ class ComputerUseTool(Tool):
             pass
 
     def _run(self, task: str, context: Optional[dict] = None) -> str:
-        plan = _parse_plan(task)
-        plan.backend = self.backend()
+        plan = _parse_plan(task, context)
+        plan.backend = self.backend(plan.targets)
 
         secret = check_secrets(task)
         if secret:

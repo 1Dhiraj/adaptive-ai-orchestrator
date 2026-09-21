@@ -582,6 +582,13 @@ class TaskPlanner:
             return None, None
         if canonical in {"email", "gmail"} and available and "adaptive_email" in available:
             return "adaptive_email", "email uses reviewed API/browser delivery"
+        if available and "computer_use" in available and (
+                canonical in {"desktop_native", "hermes_desktop", "desktop_automation"}
+                or canonical.startswith("web_browser_")
+                or canonical.startswith("browser_")):
+            return "computer_use", (
+                f"low-level tool '{canonical}' cannot complete a multi-action goal; "
+                "using guarded computer_use instead")
         if available is None or canonical in available:
             return canonical, None
 

@@ -18,7 +18,7 @@ from orchestrator.llm import (
 from orchestrator.memory import MemoryManager, truncate
 from orchestrator.models import LLMUsage, Step, content_hash
 from orchestrator.tools import ToolManager, default_tool_manager
-from orchestrator.tools.base import SimulatedTool
+from orchestrator.tools.base import SimulatedTool, ToolInvocation
 
 
 class TestRoleNormalisation:
@@ -82,6 +82,18 @@ class TestAgent:
         agent = Agent("backend", llm=stub_llm)
         step = Step(id="a", description="x", agent_role="backend", requires_tool="github")
         assert "FALLBACK" in agent.execute(step, "", tools).output
+
+    def test_computer_use_result_hides_model_tool_reasoning(self):
+        invocation = ToolInvocation(
+            requested="computer_use", tool_used="computer_use", ok=True,
+            simulated=False, output="opened Notepad and typed 5 characters")
+
+        merged = Agent.merge_tool_result(
+            "We need to output a tool directive, but the response was cut off.",
+            "computer_use", invocation)
+
+        assert merged == (
+            "Tool `computer_use`: opened Notepad and typed 5 characters")
 
     def test_role_specific_output_from_the_stub(self, stub_llm):
         step = Step(id="db", description="Design the schema", agent_role="database")

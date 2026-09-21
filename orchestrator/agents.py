@@ -273,6 +273,7 @@ class Agent:
             tool_name, payload,
             context={
                 "step_id": step.id, "step_name": step.name, "role": self.role,
+                "step_description": step.description,
                 # Operator answers are passed to the tool directly, not just
                 # into the prompt: a recipient address must route the email
                 # itself rather than depend on the model echoing it back.
@@ -293,7 +294,16 @@ class Agent:
             r"(?:\r?\n)?TOOL_DIRECTIVE:.*$", "", agent_output,
             flags=re.MULTILINE | re.DOTALL,
         ).rstrip()
-        suffix = f"\n\n---\nTool `{invocation.tool_used}`"
+        # Screen-control model output is machine planning, not a deliverable.
+        # If the model stops before its directive, displaying that reasoning
+        # above a successful real action is confusing and can expose internal
+        # instructions. The verified tool result is the user-facing evidence.
+        if requested_tool in {
+            "computer_use", "desktop_native", "hermes_desktop", "adaptive_email",
+        }:
+            agent_output = ""
+        separator = "\n\n---\n" if agent_output else ""
+        suffix = f"{separator}Tool `{invocation.tool_used}`"
         if invocation.used_fallback:
             suffix += f" (FALLBACK for `{requested_tool}`)"
         return f"{agent_output}{suffix}: {invocation.output}"

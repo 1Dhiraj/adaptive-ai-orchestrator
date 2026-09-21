@@ -80,7 +80,7 @@ class TestPlanning:
         ("Write a literature review comparing multi-agent frameworks",
          {"scope", "research", "analyse", "write", "verify"}, None),
         ("Create a weekly report in Microsoft Word",
-         {"prepare", "desktop_work", "verify"}, "hermes_desktop"),
+         {"prepare", "desktop_work", "verify"}, "computer_use"),
         ("Build a web app for managing college events",
          {"requirements", "database", "backend", "frontend", "testing"}, "workspace"),
     ])
@@ -151,6 +151,18 @@ class TestPlanning:
                                    ("git", "github"), ("database_service", "postgres")]:
             resolved, note = TaskPlanner.resolve_tool(invented, available)
             assert resolved == expected, f"{invented} should resolve to {expected}"
+
+    @pytest.mark.parametrize("low_level", [
+        "desktop_native", "hermes_desktop", "web_browser_navigate",
+    ])
+    def test_low_level_ui_tools_route_through_multi_action_computer_use(self, low_level):
+        available = {"computer_use", "desktop_native", "hermes_desktop",
+                     "web_browser_navigate"}
+
+        resolved, note = TaskPlanner.resolve_tool(low_level, available)
+
+        assert resolved == "computer_use"
+        assert note and "multi-action" in note
 
     def test_unresolvable_tool_is_preserved_for_discovery(self):
         from orchestrator.tools import default_tool_manager

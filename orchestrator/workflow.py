@@ -1231,6 +1231,7 @@ class Workflow:
         tool_name = outcome.deferred_tool
         tool = self.tools.get(tool_name)
         preview = tool.preview(outcome.output, {"step_id": step.id, "step_name": step.name,
+                                               "step_description": step.description,
                                                "inputs": {**self.all_input_values(), **step.input_values()}}) \
             if tool is not None else f"{tool_name}: (no preview available)"
 

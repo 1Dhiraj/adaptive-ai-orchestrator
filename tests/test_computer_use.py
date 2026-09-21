@@ -19,6 +19,7 @@ from orchestrator.tools.computer_use import (
     allowed_targets,
     check_secrets,
 )
+from orchestrator.tools.desktop import DesktopTool
 
 
 class FakeBackend(Tool):
@@ -111,6 +112,13 @@ class TestBackendSelection:
         tool = ComputerUseTool(run_id="pick2",
                                tools=ToolManager([FakeBackend("hermes_desktop")]))
         assert tool.backend() == "hermes_desktop"
+
+    def test_native_app_target_uses_desktop_even_when_browser_is_connected(self):
+        browser = FakeBackend("web_browser_navigate")
+        desktop = FakeBackend("desktop_native")
+        tool = ComputerUseTool(run_id="pick-app", tools=ToolManager([browser, desktop]))
+
+        assert tool.backend(["notepad"]) == "desktop_native"
 
     def test_no_backend_reports_none(self):
         assert ComputerUseTool(run_id="pick3", tools=ToolManager([])).backend() == "none"
@@ -360,6 +368,48 @@ class TestLimitsAndLogging:
             {"action": "key", "keys": "ctrl+s", "window": "notepad"},
         ]
         assert "3 action(s)" in output
+
+    def test_missing_model_directive_uses_bounded_step_description_plan(
+            self, allow_everything, tmp_path):
+        desktop = FakeBackend("desktop_native")
+        tool = ComputerUseTool(
+            run_id="native-fallback", tools=ToolManager([
+                FakeBackend("web_browser_navigate"), desktop,
+            ]), root=tmp_path)
+
+        output = tool.execute(
+            "The model discussed the task but omitted its directive.",
+            {"step_description": "Open Notepad and type 'hello' into it."})
+
+        specs = [json.loads(call.removeprefix("TOOL_DIRECTIVE: "))["arguments"]
+                 for call in desktop.calls]
+        assert specs == [
+            {"action": "launch", "app": "notepad"},
+            {"action": "type", "text": "hello", "window": "notepad"},
+        ]
+        assert "2 action(s)" in output
+
+    def test_missing_directive_preview_shows_the_exact_recovery_plan(
+            self, allow_everything, tmp_path):
+        tool = ComputerUseTool(
+            run_id="native-preview", tools=ToolManager([
+                FakeBackend("web_browser_navigate"), FakeBackend("desktop_native"),
+            ]), root=tmp_path)
+
+        preview = tool.preview(
+            "The model stopped before its directive.",
+            {"step_description": "Open Notepad and type 'hello' into it."})
+
+        assert "backend: desktop_native" in preview
+        assert "touches: notepad" in preview
+        assert "1. launch the app" in preview
+        assert '2. type "hello"' in preview
+
+    def test_raw_desktop_tool_rejects_a_missing_action(self, tmp_path):
+        tool = DesktopTool(run_id="no-op", root=tmp_path)
+
+        with pytest.raises(ToolError, match="nothing was done"):
+            tool.execute("The model forgot the TOOL_DIRECTIVE")
 
 
 class TestRegistration:

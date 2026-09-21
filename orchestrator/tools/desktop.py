@@ -426,7 +426,9 @@ class DesktopTool(Tool):
         spec = self._directive(task)
         action = str(spec.get("action", "")).strip().lower()
         if not action:
-            return ('[desktop_native] no "action" in TOOL_DIRECTIVE; nothing done')
+            raise ToolError(
+                'desktop_native received no valid "action" in TOOL_DIRECTIVE; '
+                "nothing was done")
 
         allow = _allow_list()
         if not allow:
