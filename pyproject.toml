@@ -13,6 +13,7 @@ dependencies = [
     "google-genai>=1.0",
     "requests>=2.31",
     "boto3>=1.42,<2",
+    "reportlab>=4.0,<5",
 ]
 
 [project.optional-dependencies]

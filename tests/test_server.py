@@ -262,8 +262,12 @@ class TestBasics:
         assert approved == ["send"]
 
     def test_tools_are_listed(self, client):
-        names = {tool["name"] for tool in client.get("/api/tools").json()}
+        listed = client.get("/api/tools").json()
+        names = {tool["name"] for tool in listed}
         assert "github" in names and "postgres" in names
+        computer_use = next(tool for tool in listed if tool["name"] == "computer_use")
+        assert computer_use["detail"]
+        assert computer_use["status"] in {"live", "unavailable", "broken"}
 
     def test_runs_start_empty(self, client):
         assert client.get("/api/runs").json() == []
@@ -660,13 +664,16 @@ class TestAdaptiveEndpoints:
         events = client.get(f"/api/runs/{ran}/events").json()
         assert any(e["type"] == "step_finished" for e in events)
 
-    @pytest.mark.parametrize("fmt", ["json", "csv", "html"])
+    @pytest.mark.parametrize("fmt", ["json", "csv", "html", "pdf"])
     def test_exports(self, client, ran, fmt):
         response = client.get(f"/api/runs/{ran}/export?format={fmt}")
         assert response.status_code == 200 and response.content
+        if fmt == "pdf":
+            assert response.headers["content-type"].startswith("application/pdf")
+            assert response.content.startswith(b"%PDF-")
 
     def test_unknown_export_format_is_400(self, client, ran):
-        assert client.get(f"/api/runs/{ran}/export?format=pdf").status_code == 400
+        assert client.get(f"/api/runs/{ran}/export?format=docx").status_code == 400
 
 
 class TestWebSocket:

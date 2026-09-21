@@ -256,14 +256,16 @@ class Agent:
             return outcome
 
         outcome.tool_invocation = self.call_tool(
-            step, tool_name, response.text, tool_manager, workflow_inputs)
+            step, tool_name, response.text, tool_manager, workflow_inputs,
+            upstream_context=context)
         outcome.output = self.merge_tool_result(response.text, tool_name,
                                                 outcome.tool_invocation)
         return outcome
 
     def call_tool(self, step: Step, tool_name: str, payload: str,
                   tool_manager: ToolManager,
-                  workflow_inputs: Optional[Dict[str, Any]] = None) -> ToolInvocation:
+                  workflow_inputs: Optional[Dict[str, Any]] = None,
+                  upstream_context: str = "") -> ToolInvocation:
         # Workflow-wide answers first, then this step's own, so a value
         # collected by an earlier step still reaches the tool that needs it
         # while a local answer of the same name still wins.
@@ -274,6 +276,10 @@ class Agent:
             context={
                 "step_id": step.id, "step_name": step.name, "role": self.role,
                 "step_description": step.description,
+                # Artifact and validation tools need the verified prerequisite
+                # evidence directly. They must not depend on the model copying
+                # that evidence correctly into a TOOL_DIRECTIVE.
+                "upstream_context": upstream_context,
                 # Operator answers are passed to the tool directly, not just
                 # into the prompt: a recipient address must route the email
                 # itself rather than depend on the model echoing it back.

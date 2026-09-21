@@ -189,6 +189,16 @@ class ArtifactStoreTool(Tool):
     def is_live(self) -> bool:
         return True
 
+    def prompt_hint(self) -> str:
+        return (
+            "Save the final deliverable inside this run's artifacts directory. "
+            "End with exactly:\n"
+            'TOOL_DIRECTIVE: {"arguments":{"path":"artifacts/report.md",'
+            '"content":"the complete deliverable"}}\n'
+            "Use a .pdf path when the task requests PDF; the tool renders a real PDF. "
+            "Never put a summary in content when the complete deliverable is available."
+        )
+
     def _run(self, task: str, context: Optional[dict] = None) -> str:
         step_id = (context or {}).get("step_id", "step")
         artifact_dir = self.workspace / "artifacts"
@@ -197,6 +207,20 @@ class ArtifactStoreTool(Tool):
         arguments = directive.get("arguments", directive)
         arguments = arguments if isinstance(arguments, dict) else {}
         requested = str(arguments.get("path") or "").replace("\\", "/").strip()
+        step_description = str((context or {}).get("step_description") or "")
+        pdf_requested = bool(re.search(r"(?i)\bpdf\b", step_description))
+        requested_pdf = re.search(
+            r"(?i)([a-z0-9][a-z0-9._-]*\.pdf)\b", step_description)
+        # The step contract outranks a model that forgot its directive or
+        # chose Markdown. A workflow must never say a requested PDF is done
+        # while only an .md file exists.
+        if pdf_requested and not requested.lower().endswith(".pdf"):
+            if requested_pdf:
+                requested = f"artifacts/{requested_pdf.group(1)}"
+            elif requested:
+                requested = str(Path(requested).with_suffix(".pdf")).replace("\\", "/")
+            else:
+                requested = f"artifacts/{_slug(str(step_id))}.pdf"
         if requested:
             if requested.startswith("/") or re.match(r"^[a-zA-Z]:", requested):
                 raise ToolError("artifact path must be relative to the run workspace")
@@ -209,14 +233,33 @@ class ArtifactStoreTool(Tool):
         else:
             path = artifact_dir / f"{_slug(str(step_id))}-{int(time.time())}.md"
         content = arguments.get("content")
+        upstream = str((context or {}).get("upstream_context") or "").strip()
+        placeholder = str(content or "").strip().casefold() in {
+            "the complete deliverable", "complete deliverable", "the deliverable",
+            "report content", "content",
+        }
+        if pdf_requested and upstream and (content is None or placeholder):
+            title = (requested_pdf.group(1) if requested_pdf else str(step_id))
+            content = (
+                f"# {Path(title).stem.replace('-', ' ').replace('_', ' ').title()}\n\n"
+                f"## Requested report\n\n{step_description}\n\n"
+                f"## Verified source results\n\n{upstream}"
+            )
         if content is None:
             content = re.sub(r"TOOL_DIRECTIVE:.*$", "", task,
                              flags=re.MULTILINE | re.DOTALL).strip()
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            path.write_text(str(content), encoding="utf-8")
+            if path.suffix.lower() == ".pdf":
+                from ..pdf_writer import write_pdf
+
+                write_pdf(path, str(content), title=path.stem.replace("_", " "))
+            else:
+                path.write_text(str(content), encoding="utf-8")
         except OSError as exc:
             raise ToolError(f"could not write artifact: {exc}") from exc
+        except Exception as exc:  # noqa: BLE001 - renderer diagnostics belong to the step
+            raise ToolError(f"could not create PDF artifact: {exc}") from exc
         return f"[artifact_store] written to {path.relative_to(self.workspace)}"
 
 
@@ -765,13 +808,18 @@ def default_tool_manager() -> ToolManager:
     from .hermes import HermesDesktopTool
 
     manager = ToolManager([
-        ComputerTaskTool(), ComputerUseTool(), DesktopTool(),
+        ComputerTaskTool(), DesktopTool(),
         GitHubTool(), GitHubCLITool(), ArtifactStoreTool(),
         PostgresTool(), PostgresCLITool(), SQLiteLocalTool(),
         CITool(), LocalTestRunnerTool(),
         SlackTool(), GmailTool(), EmailTool(), ConsoleNotifyTool(),
         RestApiTool(), StripeTool(), S3Tool(), HermesDesktopTool(),
     ])
+    # computer_use discovers its browser and desktop backends dynamically.
+    # Binding it to the actual registry here keeps planning, /api/tools and
+    # execution in agreement; an unbound catalogue incorrectly reported the
+    # capability as unavailable even while Playwright/native control was live.
+    manager.register(ComputerUseTool(tools=manager))
     return manager
 
 

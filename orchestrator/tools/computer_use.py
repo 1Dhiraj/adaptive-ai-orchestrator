@@ -135,26 +135,68 @@ def _looks_like_web_target(target: str) -> bool:
     )
 
 
+def _normalise_target(target: str) -> str:
+    """Turn an approved URL/domain/app target into its stable allow-list key."""
+    candidate = (target or "").strip().lower()
+    if re.match(r"^https?://", candidate):
+        parsed = urlparse(candidate)
+        return (parsed.hostname or "").lower()
+    return candidate
+
+
+def _target_from_description(description: str) -> str:
+    """Recover only a target already present in the configured allow-list.
+
+    The two intent aliases below are deliberately narrow. They make ordinary
+    phrases such as "open Gmail" and "search the web" usable without granting
+    access to a site that the operator did not already allow.
+    """
+    text = (description or "").strip()
+    lowered = text.lower()
+    allow = allowed_targets()
+    direct = next((entry for entry in sorted(allow, key=len, reverse=True)
+                   if re.search(rf"(?<![a-z0-9]){re.escape(entry)}(?![a-z0-9])", lowered)), "")
+    if direct:
+        return direct
+    if re.search(r"(?i)\b(?:gmail|e-?mail|mailbox|inbox)\b", text):
+        for candidate in ("mail.google.com", "gmail.com"):
+            if candidate in allow:
+                return candidate
+    if re.search(r"(?i)\b(?:browser|web|search|research)\b", text) and "google.com" in allow:
+        return "google.com"
+    return ""
+
+
 def _plan_from_description(description: str) -> ComputerUsePlan:
     """Compile a narrow safe plan when a model omits its directive."""
     text = (description or "").strip()
     lowered = text.lower()
-    target = next((entry for entry in sorted(allowed_targets(), key=len, reverse=True)
-                   if re.search(rf"(?<![a-z0-9]){re.escape(entry)}(?![a-z0-9])", lowered)), "")
+    target = _target_from_description(text)
     if not target:
         return ComputerUsePlan(goal=text[:300])
 
     actions: List[str] = []
-    if re.search(r"(?i)\b(?:open|launch|start)\b", text):
+    if _looks_like_web_target(target) or re.search(
+            r"(?i)\b(?:open|launch|start|browser|gmail|mailbox|inbox)\b", text):
         actions.append("open the page" if _looks_like_web_target(target) else "launch the app")
     typed = re.search(
-        r"(?i)\b(?:type|write|enter)\s+(?:the\s+text\s+)?"
+        r"(?i)\b(?:type|write|enter)\s+(?:the\s+text\s+)?(?:exactly\s+)?"
         r"(?:'([^']*)'|\"([^\"]*)\"|(.+?))"
         r"(?:\s+(?:in|into)\b|[.;]|$)", text)
     if typed and not _looks_like_web_target(target):
         value = next((part for part in typed.groups() if part is not None), "").strip()
         if value:
             actions.append(f"type {json.dumps(value)}")
+    if _looks_like_web_target(target):
+        clicked = re.search(
+            r"(?i)\bclick\s+(?:the\s+)?(?:['\"]([^'\"]+)['\"]|"
+            r"([a-z0-9][a-z0-9 _-]{0,60}?))(?:\s+(?:button|link))?(?:[.;]|$)", text)
+        if clicked:
+            label = next((part for part in clicked.groups() if part), "").strip()
+            if label:
+                actions.append(f"click {label}")
+        if re.search(r"(?i)\b(?:read|extract|collect|summari[sz]e)\b", text):
+            actions.append("read the page")
     return ComputerUsePlan(goal=text[:300], targets=[target], actions=actions)
 
 
@@ -168,19 +210,39 @@ def _parse_plan(task: str, context: Optional[dict] = None) -> ComputerUsePlan:
             payload = parsed.get("arguments", parsed) if isinstance(parsed, dict) else {}
         except ValueError:
             payload = {}
-    goal = str(payload.get("goal") or (task or "").strip().splitlines()[:1][0] if task else "")
+    first_line = (task or "").strip().splitlines()
+    goal = str(payload.get("goal") or (first_line[0] if first_line else ""))
     targets = payload.get("targets") or payload.get("domains") or []
     if isinstance(targets, str):
         targets = [targets]
     actions = payload.get("actions") or []
     if isinstance(actions, str):
         actions = [actions]
+    actions = [str(a).strip() for a in actions if str(a).strip()]
+    # Model output is untrusted. URLs are reduced to hostnames, and prose such
+    # as "open the page" is not accepted as a target. Bare names are allowed
+    # only when they exactly name an operator-approved application.
+    allow = allowed_targets()
+    normalised_targets = []
+    for raw_target in targets:
+        candidate = _normalise_target(str(raw_target))
+        if candidate and (_looks_like_web_target(candidate) or candidate in allow):
+            if candidate not in normalised_targets:
+                normalised_targets.append(candidate)
+    try:
+        max_steps = max(1, min(int(payload.get("max_steps") or _DEFAULT_MAX_STEPS), 100))
+    except (TypeError, ValueError):
+        max_steps = _DEFAULT_MAX_STEPS
+    try:
+        time_limit_s = max(1.0, min(float(payload.get("time_limit_s") or _DEFAULT_TIME_LIMIT_S), 900.0))
+    except (TypeError, ValueError):
+        time_limit_s = _DEFAULT_TIME_LIMIT_S
     plan = ComputerUsePlan(
         goal=goal[:300],
-        targets=[str(t).strip().lower() for t in targets if str(t).strip()],
-        actions=[str(a).strip() for a in actions if str(a).strip()],
-        max_steps=int(payload.get("max_steps") or _DEFAULT_MAX_STEPS),
-        time_limit_s=float(payload.get("time_limit_s") or _DEFAULT_TIME_LIMIT_S),
+        targets=normalised_targets,
+        actions=actions,
+        max_steps=max_steps,
+        time_limit_s=time_limit_s,
     )
     if (not plan.targets or not plan.actions) and context:
         fallback = _plan_from_description(str(context.get("step_description") or ""))
@@ -261,6 +323,15 @@ def _snapshot_ref(snapshot: str, label: str) -> Optional[str]:
 def _browser_interaction(action: str, snapshot: str) -> Optional[tuple[List[str], dict]]:
     """Compile common human browser instructions into typed MCP arguments."""
     text = action.strip()
+    if re.fullmatch(r"(?i)\s*(?:go|navigate)\s+back\s*", text):
+        return ["web_browser_navigate_back", "browser_navigate_back"], {}
+    if re.search(r"(?i)^\s*(?:take\s+(?:a\s+)?)?screenshot\b", text):
+        return ["web_browser_take_screenshot", "browser_take_screenshot"], {"type": "png"}
+    waited = re.fullmatch(r"(?i)\s*wait\s+(\d+(?:\.\d+)?)\s*(?:seconds?|s)?\s*", text)
+    if waited:
+        return ["web_browser_wait_for", "browser_wait_for"], {
+            "time": min(float(waited.group(1)), 30.0),
+        }
     # Navigation, search and read/extract instructions are handled by the URL
     # compiler and snapshots, not replayed as bogus navigate calls.
     if re.search(r"(?i)^\s*(?:open|navigate|go to|read|extract|collect|summarize|search\b)", text):
@@ -283,6 +354,38 @@ def _browser_interaction(action: str, snapshot: str) -> Optional[tuple[List[str]
             "element": label, "ref": ref, "text": value,
         }
 
+    selected = re.search(
+        r"(?i)^\s*select\s+(['\"])(.*?)\1\s+(?:from|in)\s+(?:the\s+)?(.+?)\s*$",
+        text,
+    )
+    if selected:
+        value, label = selected.group(2), selected.group(3).strip(" '\".")
+        ref = _snapshot_ref(snapshot, label)
+        if not ref:
+            raise ToolError(f"could not uniquely find {label!r} in the browser snapshot")
+        return ["web_browser_select_option", "browser_select_option"], {
+            "element": label, "ref": ref, "values": [value],
+        }
+
+    hovered = re.search(r"(?i)^\s*hover\s+(?:over\s+)?(?:the\s+)?(.+?)\s*$", text)
+    if hovered:
+        label = hovered.group(1).strip(" '\".")
+        ref = _snapshot_ref(snapshot, label)
+        if not ref:
+            raise ToolError(f"could not uniquely find {label!r} in the browser snapshot")
+        return ["web_browser_hover", "browser_hover"], {"element": label, "ref": ref}
+
+    dragged = re.search(r"(?i)^\s*drag\s+(.+?)\s+to\s+(.+?)\s*$", text)
+    if dragged:
+        start, end = (part.strip(" '\".") for part in dragged.groups())
+        start_ref, end_ref = _snapshot_ref(snapshot, start), _snapshot_ref(snapshot, end)
+        if not start_ref or not end_ref:
+            raise ToolError(f"could not uniquely find drag endpoints {start!r} and {end!r}")
+        return ["web_browser_drag", "browser_drag"], {
+            "startElement": start, "startRef": start_ref,
+            "endElement": end, "endRef": end_ref,
+        }
+
     clicked = re.search(r"(?i)^\s*click\s+(?:the\s+)?(.+?)\s*$", text)
     if clicked:
         label = re.sub(r"(?i)\s+(?:button|link)$", "", clicked.group(1)).strip(" '\".")
@@ -296,7 +399,8 @@ def _browser_interaction(action: str, snapshot: str) -> Optional[tuple[List[str]
         return ["web_browser_press_key", "browser_press_key"], {"key": pressed.group(1)}
     raise ToolError(
         f"unsupported browser action {text!r}; use open/read, click <label>, "
-        "type 'text' into <label>, or press <key>")
+        "type 'text' into <label>, select, hover, drag, screenshot, wait, "
+        "go back, or press <key>")
 
 
 def _native_action_spec(action: str, target: str) -> dict:
@@ -321,6 +425,10 @@ def _native_action_spec(action: str, target: str) -> dict:
     if clicked:
         return {"action": "click", "x": int(clicked.group(1)),
                 "y": int(clicked.group(2)), "window": window}
+    clicked_target = re.search(r"(?i)^\s*click\s+(?:the\s+)?(.+?)\s*$", text)
+    if clicked_target:
+        return {"action": "click_target", "target": clicked_target.group(1).strip(" '\"."),
+                "window": window}
     located = re.search(r"(?i)^\s*(?:locate|find)\s+(?:the\s+)?(.+?)\s*$", text)
     if located:
         return {"action": "locate", "target": located.group(1).strip(" ."),
@@ -348,7 +456,7 @@ def _snapshot_highlights(snapshot: str, limit: int = 700) -> str:
         r"google apps|sign in|settings|\blink \"(?:all|images|videos|news)\""
     )
     interesting = re.compile(
-        r"(?i)(?:page title:|^- (?:heading|strong|text:|/url:\s*https?://))"
+        r"(?i)(?:page title:|^- (?:heading|paragraph|strong|text:|/url:\s*https?://))"
     )
     titles: List[str] = []
     urls: List[str] = []
@@ -449,6 +557,21 @@ class ComputerUseTool(Tool):
     def is_live(self) -> bool:
         return _enabled() and self.backend() != "none"
 
+    def availability_detail(self) -> str:
+        if self.is_broken:
+            return "marked broken"
+        if not _enabled():
+            return "computer control disabled by ORCHESTRATOR_ALLOW_DESKTOP"
+        browser = self._browser_backend()
+        desktop = self._desktop_backend()
+        if browser and desktop:
+            return f"ready: browser={browser}, desktop={desktop}"
+        if browser:
+            return f"ready for browser tasks via {browser}; no live desktop backend"
+        if desktop:
+            return f"ready for desktop tasks via {desktop}; no live browser backend"
+        return "no live browser or desktop backend"
+
     # -- agent-facing ------------------------------------------------------
 
     def prompt_hint(self) -> str:
@@ -465,8 +588,28 @@ class ComputerUseTool(Tool):
     def preview(self, task: str, context: Optional[dict] = None) -> str:
         plan = _parse_plan(task, context)
         plan.backend = self.backend(plan.targets)
-        mode = "REAL" if self.is_live() else "simulated"
+        self._add_search_submission_when_supported(plan)
+        mode = "REAL" if _enabled() and plan.backend != "none" else "unavailable"
         return f"computer_use [{mode}]\n{plan.describe()}"
+
+    def _add_search_submission_when_supported(self, plan: ComputerUsePlan) -> None:
+        """Complete a truncated search plan when its backend can press Enter.
+
+        Older or minimal MCP servers may expose navigation and typing without a
+        key tool.  In that case we preserve the executable portion of the plan
+        instead of inventing an action the backend cannot perform.
+        """
+        if not (self.tools and any(
+                (tool := self.tools.get(name)) is not None
+                and not tool.is_broken and tool.is_live()
+                for name in ("web_browser_press_key", "browser_press_key"))):
+            return
+        if (any(re.search(r"(?i)^\s*(?:type|enter|fill).+\b(?:search|query)\b", action)
+                for action in plan.actions)
+                and not any(re.search(
+                    r"(?i)\b(?:submit|press\s+enter|click.+search)\b", action)
+                    for action in plan.actions)):
+            plan.actions.append("press Enter")
 
     # -- execution ---------------------------------------------------------
 
@@ -483,6 +626,20 @@ class ComputerUseTool(Tool):
     def _run(self, task: str, context: Optional[dict] = None) -> str:
         plan = _parse_plan(task, context)
         plan.backend = self.backend(plan.targets)
+        self._add_search_submission_when_supported(plan)
+
+        intent = " ".join(filter(None, [
+            plan.goal,
+            str((context or {}).get("step_description") or ""),
+        ]))
+        if (re.search(r"(?i)\b(?:send|compose|draft)\b", intent)
+                and re.search(r"(?i)\b(?:e-?mail|gmail|mail)\b", intent)
+                and not any(re.search(r"(?i)\b(?:recipient|subject|body|send button)\b", action)
+                            for action in plan.actions)):
+            raise ToolError(
+                "refused to report an email task complete after only opening a page; "
+                "route this step through adaptive_email so recipient, subject and body "
+                "are reviewed and sending remains approval-bound")
 
         secret = check_secrets(task)
         if secret:

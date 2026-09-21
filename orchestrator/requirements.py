@@ -227,7 +227,16 @@ def _check_binary(req: Requirement) -> None:
 
 def check_requirement(req: Requirement, tools: Optional["ToolManager"] = None) -> Requirement:
     """Resolve one requirement against the real environment (mutates in place)."""
-    if req.kind is RequirementKind.TOOL:
+    # Models sometimes mislabel a registered adapter as a package or binary
+    # (for example ``desktop_native``). The registry is authoritative: looking
+    # for an in-process tool on PATH produces a false blocker even while that
+    # exact tool is live and has already completed work.
+    from .tools import canonical_tool_name
+
+    registered_name = canonical_tool_name(req.name) or req.name
+    registered = tools.get(registered_name) if tools is not None else None
+    if registered is not None and req.kind in {
+            RequirementKind.TOOL, RequirementKind.PACKAGE, RequirementKind.BINARY}:
         _check_tool(req, tools)
     elif req.kind is RequirementKind.MCP_SERVER:
         _check_mcp_server(req, tools)

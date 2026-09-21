@@ -289,6 +289,24 @@ class TestLimitsAndLogging:
         assert snapshot.calls == [""]
         assert "https://github.com/example/agent-survey" in output
 
+    def test_browser_output_keeps_page_paragraphs(
+            self, allow_everything, tmp_path):
+        navigate = FakeBackend()
+        snapshot = FakeBackend("web_browser_snapshot", response='''
+        Page Title: Example Domain
+        - heading "Example Domain" [level=1]
+        - paragraph: This domain is for use in illustrative examples.
+        ''')
+        tool = ComputerUseTool(
+            run_id="browser-paragraph", tools=ToolManager([navigate, snapshot]),
+            root=tmp_path)
+
+        output = tool.execute(directive(
+            goal="read", targets=["example.com"],
+            actions=["open the page", "read the page"]))
+
+        assert "This domain is for use in illustrative examples." in output
+
     def test_explicit_url_is_used_only_on_the_approved_target(
             self, allow_everything, tmp_path):
         backend = FakeBackend()
@@ -350,6 +368,89 @@ class TestLimitsAndLogging:
             type_tool.calls[0].removeprefix("TOOL_DIRECTIVE: "))["arguments"]
         assert arguments == {"element": "Search", "ref": "q7", "text": "AI agents"}
 
+    def test_desktop_fallback_treats_exactly_as_an_instruction_not_text(
+            self, allow_everything, tmp_path):
+        desktop = FakeBackend("desktop_native")
+        tool = ComputerUseTool(
+            run_id="desktop-exact-text", tools=ToolManager([desktop]), root=tmp_path)
+
+        tool.execute("model omitted directive", {
+            "step_description": (
+                "Open Windows Notepad and type exactly REVIEW DESKTOP PASSED. "
+                "Verify the text is present."
+            )
+        })
+
+        calls = [json.loads(call.removeprefix("TOOL_DIRECTIVE: "))["arguments"]
+                 for call in desktop.calls]
+        assert {"action": "type", "text": "REVIEW DESKTOP PASSED", "window": "notepad"} in calls
+
+    def test_search_field_typing_automatically_submits_with_enter(
+            self, allow_everything, tmp_path):
+        navigate = FakeBackend()
+        snapshot = FakeBackend("web_browser_snapshot", response='''
+        - textbox "Search" [ref=q7]
+        ''')
+        type_tool = FakeBackend("web_browser_type")
+        key_tool = FakeBackend("web_browser_press_key")
+        tool = ComputerUseTool(
+            run_id="browser-search-submit",
+            tools=ToolManager([navigate, snapshot, type_tool, key_tool]), root=tmp_path)
+
+        tool.execute(directive(
+            goal="search", targets=["example.com"],
+            actions=["open the page", "type 'AI agents' into Search"]))
+
+        key_args = json.loads(
+            key_tool.calls[0].removeprefix("TOOL_DIRECTIVE: "))["arguments"]
+        assert key_args == {"key": "Enter"}
+
+    def test_browser_select_and_hover_use_accessible_refs(
+            self, allow_everything, tmp_path):
+        navigate = FakeBackend()
+        snapshot = FakeBackend("web_browser_snapshot", response='''
+        - combobox "Country" [ref=c4]
+        - button "Help" [ref=h2]
+        ''')
+        select = FakeBackend("web_browser_select_option")
+        hover = FakeBackend("web_browser_hover")
+        tool = ComputerUseTool(
+            run_id="browser-rich-actions",
+            tools=ToolManager([navigate, snapshot, select, hover]), root=tmp_path)
+
+        tool.execute(directive(
+            goal="configure form", targets=["example.com"],
+            actions=["open the page", "select 'India' from Country", "hover Help"]))
+
+        select_args = json.loads(
+            select.calls[0].removeprefix("TOOL_DIRECTIVE: "))["arguments"]
+        hover_args = json.loads(
+            hover.calls[0].removeprefix("TOOL_DIRECTIVE: "))["arguments"]
+        assert select_args == {"element": "Country", "ref": "c4", "values": ["India"]}
+        assert hover_args == {"element": "Help", "ref": "h2"}
+
+    def test_browser_wait_screenshot_and_back_are_typed_calls(
+            self, allow_everything, tmp_path):
+        navigate = FakeBackend()
+        snapshot = FakeBackend("web_browser_snapshot", response="Page Title: Example")
+        wait = FakeBackend("web_browser_wait_for")
+        screenshot = FakeBackend("web_browser_take_screenshot")
+        back = FakeBackend("web_browser_navigate_back")
+        tool = ComputerUseTool(
+            run_id="browser-navigation-actions",
+            tools=ToolManager([navigate, snapshot, wait, screenshot, back]), root=tmp_path)
+
+        tool.execute(directive(
+            goal="inspect", targets=["example.com"],
+            actions=["open the page", "wait 2 seconds", "take screenshot", "go back"]))
+
+        assert json.loads(wait.calls[0].removeprefix("TOOL_DIRECTIVE: ")) == {
+            "arguments": {"time": 2.0}}
+        assert json.loads(screenshot.calls[0].removeprefix("TOOL_DIRECTIVE: ")) == {
+            "arguments": {"type": "png"}}
+        assert json.loads(back.calls[0].removeprefix("TOOL_DIRECTIVE: ")) == {
+            "arguments": {}}
+
     def test_native_desktop_gets_typed_directives_not_natural_language(
             self, allow_everything, tmp_path):
         desktop = FakeBackend("desktop_native")
@@ -368,6 +469,21 @@ class TestLimitsAndLogging:
             {"action": "key", "keys": "ctrl+s", "window": "notepad"},
         ]
         assert "3 action(s)" in output
+
+    def test_native_named_click_becomes_guarded_vision_click(
+            self, allow_everything, tmp_path):
+        desktop = FakeBackend("desktop_native")
+        tool = ComputerUseTool(
+            run_id="native-named-click", tools=ToolManager([desktop]), root=tmp_path)
+
+        tool.execute(directive(
+            goal="use the editor", targets=["notepad"],
+            actions=["click Save button"]))
+
+        spec = json.loads(
+            desktop.calls[0].removeprefix("TOOL_DIRECTIVE: "))["arguments"]
+        assert spec == {"action": "click_target", "target": "Save button",
+                        "window": "notepad"}
 
     def test_missing_model_directive_uses_bounded_step_description_plan(
             self, allow_everything, tmp_path):
@@ -405,11 +521,90 @@ class TestLimitsAndLogging:
         assert "1. launch the app" in preview
         assert '2. type "hello"' in preview
 
+    def test_invalid_model_target_is_recovered_from_step_description(
+            self, monkeypatch, tmp_path):
+        monkeypatch.setenv("ORCHESTRATOR_ALLOW_DESKTOP", "1")
+        monkeypatch.setenv("ORCHESTRATOR_COMPUTER_USE_ALLOW", "google.com")
+        navigate = FakeBackend()
+        tool = ComputerUseTool(
+            run_id="browser-recovery", tools=ToolManager([navigate]), root=tmp_path)
+
+        tool.execute(
+            directive(goal="research", targets=["open the page"], actions=["open the page"]),
+            {"step_description": "Research AI agents on the web"})
+
+        arguments = json.loads(
+            navigate.calls[0].removeprefix("TOOL_DIRECTIVE: "))["arguments"]
+        assert arguments["url"] == "https://google.com"
+
+    def test_url_targets_are_reduced_to_their_approved_hostname(
+            self, allow_everything, tmp_path):
+        navigate = FakeBackend()
+        tool = ComputerUseTool(
+            run_id="browser-target-normalise", tools=ToolManager([navigate]), root=tmp_path)
+
+        tool.execute(directive(
+            goal="read", targets=["https://example.com/private?q=1"],
+            actions=["open the page"]))
+
+        arguments = json.loads(
+            navigate.calls[0].removeprefix("TOOL_DIRECTIVE: "))["arguments"]
+        assert arguments["url"] == "https://example.com"
+
+    def test_email_intent_cannot_succeed_by_only_opening_gmail(
+            self, monkeypatch, tmp_path):
+        monkeypatch.setenv("ORCHESTRATOR_ALLOW_DESKTOP", "1")
+        monkeypatch.setenv(
+            "ORCHESTRATOR_COMPUTER_USE_ALLOW", "mail.google.com,google.com")
+        navigate = FakeBackend()
+        tool = ComputerUseTool(
+            run_id="email-no-false-success", tools=ToolManager([navigate]), root=tmp_path)
+
+        with pytest.raises(ToolError, match="adaptive_email"):
+            tool.execute(
+                "The model omitted its directive.",
+                {"step_description": "Open browser and send mail saying hello"})
+        assert navigate.calls == []
+
     def test_raw_desktop_tool_rejects_a_missing_action(self, tmp_path):
         tool = DesktopTool(run_id="no-op", root=tmp_path)
 
         with pytest.raises(ToolError, match="nothing was done"):
             tool.execute("The model forgot the TOOL_DIRECTIVE")
+
+    def test_desktop_focus_keeps_the_matching_foreground_instance(
+            self, monkeypatch, tmp_path):
+        import orchestrator.tools.desktop as desktop_module
+
+        monkeypatch.setattr(desktop_module, "foreground_window",
+                            lambda: "Untitled - Notepad")
+        monkeypatch.setattr(desktop_module, "foreground_process",
+                            lambda: "notepad.exe")
+        monkeypatch.setattr(
+            desktop_module, "list_windows",
+            lambda: pytest.fail("must not select an older same-named window"))
+
+        result = DesktopTool(run_id="focus-new-window", root=tmp_path)._focus(
+            "notepad", ["notepad"])
+
+        assert result == "focused 'Untitled - Notepad'"
+
+    def test_desktop_type_passes_exact_text_to_unicode_input(
+            self, monkeypatch, tmp_path):
+        import orchestrator.tools.desktop as desktop_module
+
+        monkeypatch.setattr(desktop_module, "_win32", lambda: (None, None, None, None))
+        monkeypatch.setattr(desktop_module.time, "sleep", lambda _seconds: None)
+        tool = DesktopTool(run_id="unicode-type", root=tmp_path)
+        monkeypatch.setattr(tool, "_ensure_target",
+                            lambda window, allow: "Untitled - Notepad [notepad.exe]")
+        captured = []
+        monkeypatch.setattr(tool, "_send_unicode", captured.append)
+
+        result = tool._type("MiXeD exact ✓", ["notepad"], "notepad")
+
+        assert captured == ["MiXeD exact ✓"]
+        assert "13 character(s)" in result
 
 
 class TestRegistration:
@@ -421,3 +616,9 @@ class TestRegistration:
         from orchestrator.tools import default_tool_manager
 
         assert default_tool_manager().get("computer_use") is not None
+
+    def test_default_catalogue_binds_computer_use_to_its_backends(self):
+        from orchestrator.tools import default_tool_manager
+
+        manager = default_tool_manager()
+        assert manager.get("computer_use").tools is manager

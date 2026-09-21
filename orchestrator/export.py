@@ -86,6 +86,37 @@ def export_csv(workflow: "Workflow", path: str = "results.csv") -> str:
 
 
 # ---------------------------------------------------------------------------
+# PDF
+# ---------------------------------------------------------------------------
+
+
+def export_pdf(workflow: "Workflow", path: str = "results.pdf") -> str:
+    """Export a readable run report as a structurally valid PDF."""
+    from .pdf_writer import write_pdf
+
+    lines = [
+        "# Adaptive AI Task Orchestrator",
+        f"Run: {workflow.run_id}",
+        f"Task: {workflow.description or 'No description'}",
+        "",
+    ]
+    for step_id in workflow.graph.topological_order():
+        step = workflow.graph.get(step_id)
+        result = workflow.results[step_id]
+        lines.extend([
+            f"## {step.name or step_id}",
+            f"Status: {result.status.value}",
+            f"Specialist: {step.agent_role}",
+            f"Tool: {result.tool_used or step.requires_tool or 'none'}",
+            step.description,
+            "",
+            result.error or result.output or "(no output)",
+            "",
+        ])
+    return write_pdf(Path(path), "\n".join(lines), title=workflow.description or "Task report")
+
+
+# ---------------------------------------------------------------------------
 # HTML
 # ---------------------------------------------------------------------------
 

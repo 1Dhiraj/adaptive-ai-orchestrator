@@ -92,6 +92,12 @@ class TestRequirementChecking:
         req = check_requirement(Requirement(name="artifact_store", kind=RequirementKind.TOOL), tools)
         assert req.status is RequirementStatus.READY
 
+    def test_registered_tool_mislabelled_as_binary_uses_registry(self, tools):
+        req = check_requirement(
+            Requirement(name="artifact_store", kind=RequirementKind.BINARY), tools)
+        assert req.status is RequirementStatus.READY
+        assert req.detail == "configured and live"
+
     def test_broken_tool_with_a_working_fallback_is_degraded_not_blocked(self, tools):
         """A broken github still runs via github_cli, so it must not block."""
         tools.break_tool("github")

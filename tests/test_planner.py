@@ -9,7 +9,9 @@ import pytest
 from orchestrator.graph import DependencyGraph
 from orchestrator.llm import LLMResponse, LLMProvider
 from orchestrator.models import LLMUsage
-from orchestrator.planner import PlanningError, TaskPlanner, extract_json, plan_from_json
+from orchestrator.planner import (PlanningError, TaskPlanner, extract_json,
+                                  filter_inputs, plan_from_json)
+from orchestrator.inputs import InputRequest
 
 
 class ScriptedProvider(LLMProvider):
@@ -68,6 +70,36 @@ class TestExtractJson:
 
 
 class TestPlanning:
+    def test_tool_setup_questions_are_not_user_inputs(self):
+        requests = [
+            InputRequest(
+                name="desktop_native_ready",
+                prompt="Have you set up 'desktop_native'?",
+                type="boolean"),
+            InputRequest(name="city", prompt="Which city?", type="text"),
+        ]
+
+        assert [request.name for request in filter_inputs(requests)] == ["city"]
+
+    def test_pdf_request_gets_a_real_terminal_artifact_step(self):
+        from orchestrator.tools import default_tool_manager
+
+        plan = json.dumps({"tasks": [{
+            "id": "research", "role": "research",
+            "description": "Research the topic in a browser",
+            "depends_on": [], "tool": "computer_use",
+        }]})
+        result = TaskPlanner(llm=ScriptedProvider(plan)).plan(
+            "Research AI agents and give me a PDF report",
+            tools=default_tool_manager())
+
+        assert result.graph.topological_order() == ["research", "create_pdf"]
+        pdf = result.graph.get("create_pdf")
+        assert pdf.requires_tool == "artifact_store"
+        assert pdf.depends_on == ["research"]
+        assert "artifacts/report.pdf" in pdf.description
+        assert any("real PDF artifact" in repair for repair in result.repairs)
+
     def test_valid_plan_becomes_a_graph(self):
         result = TaskPlanner(llm=ScriptedProvider(VALID_PLAN)).plan("Build something")
         assert result.graph.topological_order() == ["design", "build", "test"]

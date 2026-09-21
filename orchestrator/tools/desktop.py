@@ -147,7 +147,8 @@ class DesktopTool(Tool):
 
     # -- vision ------------------------------------------------------------
 
-    def _locate(self, target: str, allow: List[str], window: str = "") -> str:
+    def _locate_point(self, target: str, allow: List[str],
+                      window: str = "") -> tuple[int, int, str, int]:
         """Find something on screen by describing it, not by coordinates.
 
         This is how Claude- and Codex-style computer use works, and why it is
@@ -210,16 +211,25 @@ class DesktopTool(Tool):
             raise ToolError(f"unreadable coordinates from the model: {exc}") from exc
 
         if not found.get("found"):
-            return (f"not on screen: {target!r} -- "
-                    f"{found.get('why', 'the model did not say why')}")
+            raise ToolError(
+                f"not on screen: {target!r} -- "
+                f"{found.get('why', 'the model did not say why')}")
 
         # Back to real screen pixels, which is what click expects.
         x = int(round(float(found.get("x", 0)) / scale))
         y = int(round(float(found.get("y", 0)) / scale))
         x = max(0, min(x, full_w - 1))
         y = max(0, min(y, full_h - 1))
-        return (f"{target!r} is at ({x},{y}) -- {found.get('what', '')} "
-                f"[{response.usage.total_tokens} tok]")
+        return x, y, str(found.get("what", "")), response.usage.total_tokens
+
+    def _locate(self, target: str, allow: List[str], window: str = "") -> str:
+        x, y, what, tokens = self._locate_point(target, allow, window)
+        return f"{target!r} is at ({x},{y}) -- {what} [{tokens} tok]"
+
+    def _click_target(self, target: str, allow: List[str], window: str = "") -> str:
+        x, y, what, tokens = self._locate_point(target, allow, window)
+        clicked = self._click(x, y, allow, window)
+        return f"located {target!r} as {what!r} [{tokens} tok]; {clicked}"
 
     def is_live(self) -> bool:
         if not _enabled() or os.name != "nt":
@@ -230,13 +240,26 @@ class DesktopTool(Tool):
         except ToolError:
             return False
 
+    def availability_detail(self) -> str:
+        if self.is_broken:
+            return "marked broken"
+        if not _enabled():
+            return "native desktop disabled by ORCHESTRATOR_ALLOW_DESKTOP"
+        if os.name != "nt":
+            return "native desktop requires Windows"
+        try:
+            _win32()
+        except ToolError as exc:
+            return str(exc)
+        return "Windows native control ready"
+
     def prompt_hint(self) -> str:
         allow = _allow_list()
         where = ", ".join(allow) if allow else "(nothing configured yet)"
         return (
             "Control the desktop. One action per call:\n"
             'TOOL_DIRECTIVE: {"arguments": {"action": "screenshot"}}\n'
-            '  actions: screenshot | windows | focus | launch | click | type | key\n'
+            '  actions: screenshot | windows | focus | launch | locate | click | click_target | type | key\n'
             '  focus   {"action":"focus","window":"Notepad"}\n'
             '  launch  {"action":"launch","app":"notepad"}\n'
             '  click   {"action":"click","x":400,"y":300}\n'
@@ -337,9 +360,20 @@ class DesktopTool(Tool):
         return f"screenshot saved to {path.name} (front window: {foreground_window()!r})"
 
     def _focus(self, wanted: str, allow: List[str]) -> str:
-        win32api, win32con, win32gui, _ = _win32()
         if not _window_allowed(wanted, allow):
             raise ToolError(f"refused: {wanted!r} is not in the allow-list")
+        # Launch commonly leaves the new application in front. Keep that
+        # exact instance instead of enumerating same-named windows and
+        # accidentally selecting an older document (for example, another
+        # Notepad tab/window). Both title and process are checked because a
+        # fresh editor may still have the generic title "Untitled".
+        current_title = foreground_window()
+        current_process = foreground_process()
+        if (_window_allowed(current_title, [wanted.lower()])
+                or _window_allowed(current_process, [wanted.lower()])):
+            return f"focused {current_title!r}"
+
+        win32api, win32con, win32gui, _ = _win32()
         for window in list_windows():
             if wanted.lower() in window["title"].lower():
                 handle = window["handle"]
@@ -383,21 +417,74 @@ class DesktopTool(Tool):
         return f"clicked ({x},{y}) in {title!r}"
 
     def _type(self, text: str, allow: List[str], window: str = "") -> str:
-        win32api, _, _, _ = _win32()
+        _win32()  # fail with the normal dependency diagnostic before acting
         title = self._ensure_target(window, allow)
-        for char in text[:2000]:
-            code = win32api.VkKeyScan(char)
-            if code == -1:
-                continue
-            vk, shift = code & 0xFF, (code >> 8) & 1
-            if shift:
-                win32api.keybd_event(_KEYS["shift"], 0, 0, 0)
-            win32api.keybd_event(vk, 0, 0, 0)
-            win32api.keybd_event(vk, 0, 2, 0)
-            if shift:
-                win32api.keybd_event(_KEYS["shift"], 0, 2, 0)
-            time.sleep(0.01)
-        return f"typed {len(text)} character(s) into {title!r}"
+        exact = text[:2000]
+        self._send_unicode(exact)
+        # Modern Notepad consumes injected events asynchronously (and even
+        # animates their arrival). Do not let the following action verify,
+        # save, or close the document while only a prefix is present.
+        time.sleep(min(5.0, max(0.1, len(exact) * 0.075)))
+        return f"typed {len(exact)} character(s) into {title!r}"
+
+    @staticmethod
+    def _send_unicode(text: str) -> None:
+        """Inject exact Unicode text without depending on keyboard state.
+
+        ``VkKeyScan`` synthesizes Shift and is affected by Caps Lock/layout;
+        in real Notepad audits that changed case and even dropped characters.
+        ``SendInput`` with ``KEYEVENTF_UNICODE`` sends UTF-16 code units
+        directly and leaves the person's clipboard untouched.
+        """
+        import ctypes
+        from ctypes import wintypes
+
+        ulong_ptr = wintypes.WPARAM
+
+        class MouseInput(ctypes.Structure):
+            _fields_ = [
+                ("dx", wintypes.LONG), ("dy", wintypes.LONG),
+                ("mouseData", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
+                ("time", wintypes.DWORD), ("dwExtraInfo", ulong_ptr),
+            ]
+
+        class KeyboardInput(ctypes.Structure):
+            _fields_ = [
+                ("wVk", wintypes.WORD), ("wScan", wintypes.WORD),
+                ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
+                ("dwExtraInfo", ulong_ptr),
+            ]
+
+        class HardwareInput(ctypes.Structure):
+            _fields_ = [
+                ("uMsg", wintypes.DWORD), ("wParamL", wintypes.WORD),
+                ("wParamH", wintypes.WORD),
+            ]
+
+        class InputValue(ctypes.Union):
+            _fields_ = [("mi", MouseInput), ("ki", KeyboardInput),
+                        ("hi", HardwareInput)]
+
+        class Input(ctypes.Structure):
+            _anonymous_ = ("value",)
+            _fields_ = [("type", wintypes.DWORD), ("value", InputValue)]
+
+        units = [int.from_bytes(text.encode("utf-16-le")[i:i + 2], "little")
+                 for i in range(0, len(text.encode("utf-16-le")), 2)]
+        events = []
+        key_up, unicode_key = 0x0002, 0x0004
+        for unit in units:
+            events.append(Input(type=1, ki=KeyboardInput(0, unit, unicode_key, 0, 0)))
+            events.append(Input(type=1, ki=KeyboardInput(
+                0, unit, unicode_key | key_up, 0, 0)))
+        if not events:
+            return
+        array = (Input * len(events))(*events)
+        sent = ctypes.windll.user32.SendInput(
+            len(array), array, ctypes.sizeof(Input))
+        if sent != len(array):
+            raise ToolError(
+                f"Windows accepted only {sent} of {len(array)} keyboard events")
 
     def _key(self, combo: str, allow: List[str], window: str = "") -> str:
         win32api, _, _, _ = _win32()
@@ -454,6 +541,9 @@ class DesktopTool(Tool):
             elif action == "click":
                 result = self._click(int(spec.get("x", -1)), int(spec.get("y", -1)), allow,
                                      str(spec.get("window", "")))
+            elif action == "click_target":
+                result = self._click_target(str(spec.get("target", "")), allow,
+                                            str(spec.get("window", "")))
             elif action == "type":
                 result = self._type(str(spec.get("text", "")), allow,
                                     str(spec.get("window", "")))

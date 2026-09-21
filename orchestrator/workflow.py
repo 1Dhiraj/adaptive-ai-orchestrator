@@ -208,7 +208,8 @@ class Workflow:
         if isinstance(self.tools.get("desktop_native"), DesktopTool):
             # Hand it the model so it can find things on screen by description
             # rather than needing coordinates worked out in advance.
-            self.tools.register(DesktopTool(self.run_id, llm=self.llm))
+            self.tools.register(DesktopTool(
+                self.run_id, llm=provider_for_role(self.llm, "screen_locator")))
         from .tools.builtin import ArtifactStoreTool
 
         if isinstance(self.tools.get("artifact_store"), ArtifactStoreTool):
@@ -1126,8 +1127,14 @@ class Workflow:
         result.input_hash = self._input_hash(step)
 
         try:
-            invocation = agent.call_tool(step, action.tool, action.payload, self.tools,
-                                         self.all_input_values())
+            import inspect
+
+            call_parameters = inspect.signature(agent.call_tool).parameters
+            extra = ({"upstream_context": self.memory.build_context(step, self.graph)}
+                     if "upstream_context" in call_parameters else {})
+            invocation = agent.call_tool(
+                step, action.tool, action.payload, self.tools,
+                self.all_input_values(), **extra)
         except ActionReviewRequiredError as exc:
             # Verification failed before an irreversible action happened. Keep
             # the frozen payload and return it to human review; regenerating it
@@ -1848,12 +1855,14 @@ class Workflow:
         return export_json(self, path)
 
     def export_state(self, path: Optional[str] = None, format: str = "json") -> str:
-        from .export import export_csv, export_html, export_json
+        from .export import export_csv, export_html, export_json, export_pdf
 
-        exporters = {"json": export_json, "html": export_html, "csv": export_csv}
+        exporters = {"json": export_json, "html": export_html,
+                     "csv": export_csv, "pdf": export_pdf}
         if format not in exporters:
             raise ValueError(f"unknown format '{format}'; expected one of {sorted(exporters)}")
-        default_names = {"json": "results.json", "html": "dashboard.html", "csv": "results.csv"}
+        default_names = {"json": "results.json", "html": "dashboard.html",
+                         "csv": "results.csv", "pdf": "results.pdf"}
         return exporters[format](self, path or default_names[format])
 
     def to_dict(self) -> Dict[str, Any]:

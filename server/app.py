@@ -32,7 +32,7 @@ from orchestrator import Step, StateManager, Workflow
 import orchestrator.config as _config
 from orchestrator.events import Event, EventType
 from orchestrator.inputs import InputError
-from orchestrator.export import export_csv, export_html, export_json
+from orchestrator.export import export_csv, export_html, export_json, export_pdf
 from server.security import SecurityPolicy
 from server.observability import (CONTENT_TYPE_LATEST, HTTP_DURATION, HTTP_REQUESTS,
                                   configure_tracing, metrics_payload)
@@ -1395,12 +1395,14 @@ async def trigger_webhook(token: str, payload: Dict[str, Any]) -> Dict[str, Any]
 async def export_run(run_id: str, format: str = "json") -> Any:
     workflow = manager.get(run_id)
     EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-    exporters = {"json": export_json, "html": export_html, "csv": export_csv}
+    exporters = {"json": export_json, "html": export_html,
+                 "csv": export_csv, "pdf": export_pdf}
     if format not in exporters:
         raise HTTPException(status_code=400, detail=f"unknown format: {format}")
     path = EXPORT_DIR / f"{run_id}.{format}"
     exporters[format](workflow, str(path))
-    media = {"json": "application/json", "html": "text/html", "csv": "text/csv"}[format]
+    media = {"json": "application/json", "html": "text/html",
+             "csv": "text/csv", "pdf": "application/pdf"}[format]
     return FileResponse(path, media_type=media, filename=path.name)
 
 

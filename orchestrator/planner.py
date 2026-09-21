@@ -149,6 +149,10 @@ TASKS:
   target sites/apps and concrete actions in its description; do not add
   separate planning or verification prose steps unless they produce a real
   deliverable.
+- A requested file is a real deliverable. If the person asks for a PDF, the
+  final task must use artifact_store with an artifacts/*.pdf path and depend
+  on every step whose output belongs in the document. Opening/searching a
+  browser is not completion until that PDF exists.
 - Descriptions state the deliverable, not the process.
 - Use condition only for a real branch. Its source must be a dependency's id
   or trigger.field for webhook data. Omit condition for normal tasks.
@@ -306,6 +310,16 @@ _DELIVERABLE_PHRASES = re.compile(
     r"what (is|are) the (body|content|text|subject|wording))",
     re.IGNORECASE)
 
+# Tool readiness is checked from the real registry and converted into one
+# setup card when genuinely missing. A planner-generated input asking the
+# same question again is unreliable and redundant.
+_SETUP_INPUT_PHRASES = re.compile(
+    r"(?:have you (?:set up|configured|installed)|"
+    r"is .{0,60}(?:set up|configured|installed|available|ready)|"
+    r"(?:tool|package|binary|connection).{0,30}(?:available|ready))",
+    re.IGNORECASE,
+)
+
 #: Too many questions is its own failure: the operator ends up doing the work.
 MAX_INPUTS_PER_STEP = 2
 MAX_INPUTS_PER_WORKFLOW = 5
@@ -321,6 +335,11 @@ def _is_deliverable_request(request: Any) -> bool:
     return bool(_DELIVERABLE_WORDS.search(request.name.replace("_", " ")))
 
 
+def _is_setup_request(request: Any) -> bool:
+    haystack = f"{request.name.replace('_', ' ')} {request.prompt}"
+    return bool(_SETUP_INPUT_PHRASES.search(haystack))
+
+
 def filter_inputs(requests: List[InputRequest],
                   limit: int = MAX_INPUTS_PER_STEP) -> List[InputRequest]:
     """Drop questions the agent should be answering itself, then cap the rest.
@@ -330,13 +349,61 @@ def filter_inputs(requests: List[InputRequest],
     workflow feel like an interrogation. Prompt wording alone does not stop
     it, so this is enforced in code.
     """
-    kept = [r for r in requests if not _is_deliverable_request(r)]
+    kept = [r for r in requests
+            if not _is_deliverable_request(r) and not _is_setup_request(r)]
     return kept[:limit]
 
 
 def _sanitise_id(raw: Any, index: int) -> str:
     text = re.sub(r"[^a-z0-9_]+", "_", str(raw or "").strip().lower()).strip("_")
     return text or f"step_{index + 1}"
+
+
+def _ensure_requested_artifacts(graph: DependencyGraph, description: str,
+                                repairs: List[str]) -> None:
+    """Make an explicitly requested PDF an enforceable final graph node."""
+    if not re.search(r"(?i)(?:\bpdf\b|\.pdf\b)", description or ""):
+        return
+
+    filename_match = re.search(r"(?i)\b([a-z0-9][a-z0-9_.-]{0,80}\.pdf)\b", description)
+    filename = filename_match.group(1) if filename_match else "report.pdf"
+    filename = re.sub(r"[^A-Za-z0-9_.-]+", "-", filename).strip(".-") or "report.pdf"
+    path = f"artifacts/{filename}"
+
+    existing = [step for step in graph if step.requires_tool == "artifact_store"]
+    instruction = (
+        f"Create the complete requested PDF at {path} from the prerequisite outputs. "
+        "Include the substantive results and any source URLs; do not replace them with "
+        "a progress note. The step is complete only when artifact_store confirms the "
+        "PDF file was written."
+    )
+    if existing:
+        step = existing[-1]
+        if ".pdf" not in step.description.lower():
+            step.description = f"{step.description.rstrip()} {instruction}"
+            repairs.append(f"step '{step.id}': enforced requested PDF artifact at {path}")
+        return
+
+    depended_on = {dependency for step in graph for dependency in step.depends_on}
+    leaves = [step_id for step_id in graph.topological_order() if step_id not in depended_on]
+    base_id = "create_pdf"
+    step_id = base_id
+    suffix = 2
+    while step_id in graph:
+        step_id = f"{base_id}_{suffix}"
+        suffix += 1
+    graph.add(Step(
+        id=step_id,
+        name="Create PDF artifact",
+        description=instruction,
+        agent_role="writer",
+        requires_tool="artifact_store",
+        depends_on=leaves,
+        output_type="text",
+        accepts=["code", "json", "text"],
+    ))
+    graph.validate()
+    repairs.append(f"added '{step_id}' because the request requires a real PDF artifact")
 
 
 class TaskPlanner:
@@ -476,6 +543,7 @@ class TaskPlanner:
         available = {t["name"] for t in tools.describe()} if tools is not None else None
         graph, graph_repairs = self.build_graph(parsed["tasks"], declared_roles, available)
         repairs.extend(graph_repairs)
+        _ensure_requested_artifacts(graph, project_description, repairs)
         from .change_aware import FactStore, check_plan
         from .config import settings
 

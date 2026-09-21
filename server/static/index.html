@@ -625,6 +625,13 @@ h3 {
   max-height:620px;
   overflow:auto;
 }
+.artifact-viewer iframe {
+  width:100%;
+  min-height:620px;
+  border:1px solid var(--line);
+  border-radius:7px;
+  background:#fff;
+}
 .view {
   animation:appear .2s ease
 }
@@ -1461,6 +1468,7 @@ dialog::backdrop {
 <button id="artifact-close">Close</button>
 </div></div>
 <pre id="artifact-content"></pre>
+<iframe id="artifact-frame" title="PDF artifact preview" hidden></iframe>
 </div>
     </div>
 <div class="panel">
@@ -1468,6 +1476,7 @@ dialog::backdrop {
 <p class="hint">Save a readable report or export the data for your own tools.</p>
 <div class="row">
 <button data-fmt="html">HTML report</button>
+<button data-fmt="pdf">PDF report</button>
 <button data-fmt="json">JSON data</button>
 <button data-fmt="csv">CSV spreadsheet</button></div></div></div>
 <div id="tab-activity" hidden>
@@ -1948,7 +1957,8 @@ function renderTools(state) {
   $("#tools").innerHTML = `<tbody>${state.tools.map((t) => `
     <tr>
       <td><b>${esc(t.name)}</b><br><span style="color:var(--muted);font-size:.7rem">
-        ${esc(t.capability)} · ${t.live ? "live" : "simulated"}</span></td>
+        ${esc(t.capability)} · ${esc(t.status || (t.live ? "live" : "unavailable"))}</span>
+        ${t.detail ? `<br><span style="color:var(--muted);font-size:.65rem">${esc(t.detail)}</span>` : ""}</td>
       <td style="color:${t.broken ? "var(--failed)" : "var(--muted)"}">
         ${t.broken ? "broken" : "ok"}</td>
       <td style="text-align:right">
@@ -1970,9 +1980,9 @@ function renderFiles(state) {
     viewer.hidden = true;
     return;
   }
-  const textFile = /\.(?:md|txt|json|csv|html?|ya?ml|log|py|js|ts|tsx|jsx|css|sql)$/i;
+  const previewFile = /\.(?:md|txt|json|csv|html?|ya?ml|log|py|js|ts|tsx|jsx|css|sql|pdf)$/i;
   host.innerHTML = files.map((file) => `<div class="row artifact-file">
-    ${textFile.test(file.path) ? `<button data-preview-file="${esc(file.path)}">View</button>` : ""}
+    ${previewFile.test(file.path) ? `<button data-preview-file="${esc(file.path)}">View</button>` : ""}
     <button data-download-file="${esc(file.path)}">Download</button>
     <span class="artifact-path">Stored at workspace/${esc(runId)}/${esc(file.path)}</span>
     <span class="meta">${file.size.toLocaleString()} bytes</span>
@@ -2021,13 +2031,31 @@ async function fetchWorkspaceFile(path) {
   return response;
 }
 
+let artifactPreviewUrl = null;
+function clearArtifactPreview() {
+  if (artifactPreviewUrl) URL.revokeObjectURL(artifactPreviewUrl);
+  artifactPreviewUrl = null;
+  const frame = $("#artifact-frame");
+  frame.removeAttribute("src");
+  frame.hidden = true;
+  $("#artifact-content").hidden = false;
+}
+
 async function viewWorkspaceFile(path) {
   try {
     const response = await fetchWorkspaceFile(path);
     const viewer = $("#artifact-viewer");
+    clearArtifactPreview();
     $("#artifact-title").textContent = path.split("/").pop();
     $("#artifact-location").textContent = `Stored at workspace/${runId}/${path}`;
-    $("#artifact-content").textContent = await response.text();
+    if (/\.pdf$/i.test(path)) {
+      artifactPreviewUrl = URL.createObjectURL(await response.blob());
+      $("#artifact-content").hidden = true;
+      $("#artifact-frame").src = artifactPreviewUrl;
+      $("#artifact-frame").hidden = false;
+    } else {
+      $("#artifact-content").textContent = await response.text();
+    }
     $("#artifact-download").dataset.path = path;
     viewer.dataset.path = path;
     viewer.hidden = false;
@@ -2636,6 +2664,8 @@ async function act(path, options = { method: "POST" }) {
     return result;
   } catch (err) {
     log("error: " + err.message, "var(--failed)");
+    notifyError(err.message);
+    return null;
   }
 }
 
@@ -3032,8 +3062,22 @@ $("#btn-plan").addEventListener("click", async () => {
   }
 });
 
-$("#btn-run").addEventListener("click", () =>
-  act(`/api/runs/${runId}/run`, { method: "POST", body: JSON.stringify({ fresh: false }) }));
+$("#btn-run").addEventListener("click", async () => {
+  if (!runId || snapshot?.busy) return;
+  const button = $("#btn-run");
+  const oldLabel = button.textContent;
+  button.disabled = true;
+  button.textContent = "Starting…";
+  try {
+    const started = await act(`/api/runs/${runId}/run`, {
+      method: "POST", body: JSON.stringify({ fresh: false }),
+    });
+    if (!started) notifyError("The task did not start. Check the error above and try again.");
+  } finally {
+    button.textContent = oldLabel;
+    if (snapshot) syncTaskControls(snapshot);
+  }
+});
 $("#btn-rerun").addEventListener("click", () =>
   act(`/api/runs/${runId}/run`, { method: "POST", body: JSON.stringify({ fresh: true }) }));
 $("#btn-resume").addEventListener("click", () => act(`/api/runs/${runId}/resume`));
@@ -3231,7 +3275,10 @@ syncMobileNavigation();
 document.querySelectorAll("[data-view]").forEach(el => el.addEventListener("click", () => showView(el.dataset.view)));
 document.querySelectorAll("[data-tab]").forEach(el => el.addEventListener("click", () => setTaskTab(el.dataset.tab)));
 $("#task-search").addEventListener("input", renderRunLists);
-$("#artifact-close").addEventListener("click", () => { $("#artifact-viewer").hidden = true; });
+$("#artifact-close").addEventListener("click", () => {
+  clearArtifactPreview();
+  $("#artifact-viewer").hidden = true;
+});
 $("#artifact-download").addEventListener("click", e => {
   if (e.currentTarget.dataset.path) downloadWorkspaceFile(e.currentTarget.dataset.path);
 });

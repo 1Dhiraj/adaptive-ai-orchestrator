@@ -102,6 +102,14 @@ class Tool(ABC):
             return "marked broken"
         return None
 
+    def availability_detail(self) -> str:
+        """Human-readable status without changing whether calls may run."""
+        if self.is_broken:
+            return "marked broken"
+        if self.is_live():
+            return "configured and live"
+        return "not configured; calls are simulated"
+
     # -- prompting ---------------------------------------------------------
 
     def prompt_hint(self) -> str:
@@ -308,6 +316,8 @@ class ToolManager:
                 "description": t.description,
                 "live": t.is_live(),
                 "broken": t.is_broken,
+                "status": "broken" if t.is_broken else ("live" if t.is_live() else "unavailable"),
+                "detail": t.availability_detail(),
                 "fallbacks": self.candidates_for(t.name)[1:],
                 "calls": t.call_count,
                 "side_effect": t.side_effect,

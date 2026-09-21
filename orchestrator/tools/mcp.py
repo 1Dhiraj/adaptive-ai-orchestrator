@@ -35,6 +35,7 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sys
 import threading
@@ -206,6 +207,11 @@ class McpConnection:
                 self._thread.start()
 
         if not self._ready.wait(self.spec.connect_timeout_s):
+            # A timed-out stdio child must not survive the dashboard process.
+            # Leaving npx/Playwright orphaned makes the next Start attempt hang
+            # on the old browser/profile and turns one transient failure into a
+            # permanent backend outage.
+            self.close(timeout=5.0)
             raise McpConnectionError(
                 f"MCP server '{self.spec.name}' did not become ready within "
                 f"{self.spec.connect_timeout_s}s")
@@ -288,7 +294,19 @@ class McpConnection:
             async with self._open_transport() as streams:
                 read, write = streams[0], streams[1]
                 async with ClientSession(read, write) as session:
-                    await session.initialize()
+                    initialise = asyncio.create_task(session.initialize())
+                    closing = asyncio.create_task(self._close_event.wait())
+                    done, _ = await asyncio.wait(
+                        {initialise, closing}, return_when=asyncio.FIRST_COMPLETED)
+                    if closing in done and initialise not in done:
+                        initialise.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await initialise
+                        return
+                    closing.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await closing
+                    await initialise
                     self._session = session
                     self._ready.set()
                     await self._close_event.wait()
@@ -473,6 +491,7 @@ class McpRegistry:
                 self._connections[spec.name] = connection
             except McpServerUnavailable as exc:
                 print(f"[mcp] skipping server '{spec.name}': {exc}")
+                connection.close()
         return registered
 
     def close_all(self) -> None:

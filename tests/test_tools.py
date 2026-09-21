@@ -110,6 +110,48 @@ class TestTerminalFallbacks:
         assert report.read_text(encoding="utf-8") == "actual report"
         assert "artifacts\\report.txt" in result or "artifacts/report.txt" in result
 
+    def test_artifact_store_renders_a_real_pdf(self, tmp_path):
+        payload = ('TOOL_DIRECTIVE: {"arguments": '
+                   '{"path":"artifacts/report.pdf","content":"# Findings\\n\\nVerified result"}}')
+        result = ArtifactStoreTool("pdf-run", root=tmp_path).execute(
+            payload, {"step_id": "report"})
+        report = tmp_path / "pdf-run" / "artifacts" / "report.pdf"
+
+        data = report.read_bytes()
+        assert data.startswith(b"%PDF-")
+        assert b"%%EOF" in data[-1024:]
+        assert "artifacts\\report.pdf" in result or "artifacts/report.pdf" in result
+
+    def test_pdf_step_contract_overrides_a_missing_model_directive(self, tmp_path):
+        result = ArtifactStoreTool("pdf-contract", root=tmp_path).execute(
+            "The model returned prose instead of its directive.",
+            {"step_id": "create_pdf", "step_description": (
+                "Create a PDF report named browser-results.pdf with the findings.")},
+        )
+        report = tmp_path / "pdf-contract" / "artifacts" / "browser-results.pdf"
+
+        assert report.read_bytes().startswith(b"%PDF-")
+        assert "browser-results.pdf" in result
+
+    def test_pdf_placeholder_is_replaced_with_verified_upstream_context(self, tmp_path):
+        payload = ('TOOL_DIRECTIVE: {"arguments": '
+                   '{"path":"artifacts/report.pdf",'
+                   '"content":"the complete deliverable"}}')
+        ArtifactStoreTool("pdf-evidence", root=tmp_path).execute(
+            payload,
+            {"step_id": "report", "step_description": "Create a PDF report.",
+             "upstream_context": "Heading: Example Domain\nExplanation: Verified text."},
+        )
+
+        import pdfplumber
+
+        report = tmp_path / "pdf-evidence" / "artifacts" / "report.pdf"
+        with pdfplumber.open(report) as document:
+            text = "\n".join(page.extract_text() or "" for page in document.pages)
+        assert "Example Domain" in text
+        assert "Verified text" in text
+        assert "the complete deliverable" not in text.lower()
+
     def test_artifact_store_rejects_parent_traversal(self, tmp_path):
         payload = ('TOOL_DIRECTIVE: {"arguments": '
                    '{"path":"artifacts/../escape.txt","content":"no"}}')
