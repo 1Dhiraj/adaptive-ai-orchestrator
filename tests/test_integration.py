@@ -9,6 +9,7 @@ from __future__ import annotations
 import csv
 import json
 import re
+from pathlib import Path
 
 import pytest
 
@@ -169,10 +170,16 @@ class TestExports:
         rows = list(csv.DictReader(path.open(encoding="utf-8")))
         assert all("\n" not in row["output"] for row in rows)
 
+    def test_pdf_export_is_a_real_pdf(self, stub_llm, tmp_path):
+        workflow = build_web_app_workflow(stub_llm)
+        workflow.run_full()
+        path = workflow.export_state(str(tmp_path / "x.pdf"), format="pdf")
+        assert Path(path).read_bytes().startswith(b"%PDF-")
+
     def test_unknown_format_raises(self, stub_llm, tmp_path):
         workflow = build_web_app_workflow(stub_llm)
         with pytest.raises(ValueError):
-            workflow.export_state(str(tmp_path / "x"), format="pdf")
+            workflow.export_state(str(tmp_path / "x"), format="docx")
 
     def test_export_results_shortcut(self, tmp_path, stub_llm):
         workflow = build_web_app_workflow(stub_llm)

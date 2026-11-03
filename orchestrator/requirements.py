@@ -106,13 +106,23 @@ class Requirement:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Requirement":
+        name = str(data.get("name", "")).strip()
         kind = data.get("kind", "tool")
         try:
             kind_enum = RequirementKind(kind)
         except ValueError:
             kind_enum = RequirementKind.TOOL
+        # Models often call language runtimes "packages" even though they are
+        # executables. Checking ``import python`` then falsely reports that the
+        # already-running interpreter is missing and asks the user to install
+        # it. Normalise only unambiguous runtime names; real libraries remain
+        # package requirements.
+        if kind_enum is RequirementKind.PACKAGE and name.lower() in {
+            "python", "python3", "node", "nodejs", "npm", "git",
+        }:
+            kind_enum = RequirementKind.BINARY
         return cls(
-            name=str(data.get("name", "")).strip(),
+            name=name,
             kind=kind_enum,
             why=str(data.get("why", "")).strip(),
             needed_by=list(data.get("needed_by") or []),
@@ -217,7 +227,16 @@ def _check_binary(req: Requirement) -> None:
 
 def check_requirement(req: Requirement, tools: Optional["ToolManager"] = None) -> Requirement:
     """Resolve one requirement against the real environment (mutates in place)."""
-    if req.kind is RequirementKind.TOOL:
+    # Models sometimes mislabel a registered adapter as a package or binary
+    # (for example ``desktop_native``). The registry is authoritative: looking
+    # for an in-process tool on PATH produces a false blocker even while that
+    # exact tool is live and has already completed work.
+    from .tools import canonical_tool_name
+
+    registered_name = canonical_tool_name(req.name) or req.name
+    registered = tools.get(registered_name) if tools is not None else None
+    if registered is not None and req.kind in {
+            RequirementKind.TOOL, RequirementKind.PACKAGE, RequirementKind.BINARY}:
         _check_tool(req, tools)
     elif req.kind is RequirementKind.MCP_SERVER:
         _check_mcp_server(req, tools)
@@ -243,6 +262,8 @@ class RequirementsReport:
     agents: List[AgentSpec] = field(default_factory=list)
     #: Free-text notes from the planner (assumptions, caveats).
     notes: List[str] = field(default_factory=list)
+    plan_errors: List[str] = field(default_factory=list)
+    estimated_tokens: int = 0
 
     # -- checking ---------------------------------------------------------
 
@@ -264,7 +285,7 @@ class RequirementsReport:
     @property
     def can_run(self) -> bool:
         """True when nothing is hard-missing. Simulated/fallback still runs."""
-        return not self.blockers
+        return not self.blockers and not self.plan_errors
 
     @property
     def degraded(self) -> List[Requirement]:
@@ -316,6 +337,11 @@ class RequirementsReport:
             for note in self.notes:
                 lines.append(f"  - {note}")
 
+        if self.estimated_tokens:
+            lines.append(f"\nEstimated plan tokens (not measured usage): {self.estimated_tokens}")
+        if self.plan_errors:
+            lines.append("\nPlan errors:")
+            lines.extend(f"  - {error}" for error in self.plan_errors)
         lines.append("\n" + "-" * width)
         if self.can_run:
             degraded = self.degraded
@@ -327,7 +353,8 @@ class RequirementsReport:
             else:
                 lines.append("READY TO RUN - everything required is configured.")
         else:
-            lines.append(f"BLOCKED - {len(self.blockers)} requirement(s) must be satisfied first:")
+            lines.append(f"BLOCKED - {len(self.blockers)} missing requirement(s), "
+                         f"{len(self.plan_errors)} plan error(s):")
             for req in self.blockers:
                 lines.append(f"  - {req.name} ({req.kind.value}): {req.detail}")
                 if req.setup:
@@ -348,6 +375,8 @@ class RequirementsReport:
             "can_run": self.can_run,
             "blockers": [r.name for r in self.blockers],
             "degraded": [r.name for r in self.degraded],
+            "plan_errors": self.plan_errors,
+            "estimated_tokens": self.estimated_tokens,
         }
 
     @classmethod
@@ -356,6 +385,8 @@ class RequirementsReport:
             requirements=[Requirement.from_dict(r) for r in data.get("requirements") or []],
             agents=[AgentSpec.from_dict(a) for a in data.get("agents") or []],
             notes=list(data.get("notes") or []),
+            plan_errors=list(data.get("plan_errors") or []),
+            estimated_tokens=int(data.get("estimated_tokens") or 0),
         )
 
 
@@ -375,6 +406,19 @@ TOOL_CREDENTIALS: Dict[str, List[tuple]] = {
     # Sending needs an account to send *from*, not just an address to send to.
     "gmail": [("GMAIL_ADDRESS", "the Gmail account to send from"),
               ("GMAIL_APP_PASSWORD", "Gmail app password for that account")],
+    # Not a secret either: the loop runs real shell commands, so it stays off
+    # until someone deliberately allows it, and the wizard is where they find
+    # out it exists.
+    "computer_task": [
+        ("ORCHESTRATOR_ALLOW_TERMINAL", "set to 1 to let agents run shell commands"),
+    ],
+    # Not secrets, but the wizard is where a person finds out this capability
+    # exists and that it is off until they deliberately turn it on and say
+    # where it may act. An empty allow-list permits nothing.
+    "computer_use": [
+        ("ORCHESTRATOR_ALLOW_DESKTOP", "set to 1 to let agents drive a browser or the desktop"),
+        ("ORCHESTRATOR_COMPUTER_USE_ALLOW", "comma-separated domains and apps it may touch"),
+    ],
     "stripe": [("STRIPE_API_KEY", "Stripe restricted API key")],
     "s3": [("AWS_ACCESS_KEY_ID", "AWS access key or use AWS_PROFILE"),
            ("AWS_SECRET_ACCESS_KEY", "AWS secret access key or use AWS_PROFILE"),

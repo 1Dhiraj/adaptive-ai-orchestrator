@@ -327,6 +327,61 @@ def cmd_resume(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_change(args: argparse.Namespace) -> int:
+    """Translate a requirement change, show its impact, then ask before re-running.
+
+    Nothing is applied by the preview: ``prepare_change`` only reads. The
+    proposal carries a digest and the graph revision it was built against, so
+    confirming a preview that has since gone stale is refused rather than
+    silently applied to a different graph.
+    """
+    _maybe_force_stub(args)
+    _banner()
+    workflow = Workflow.resume_from(args.run_id)
+    try:
+        try:
+            proposal = workflow.prepare_change(args.request)
+        except ValueError as exc:
+            print(f"could not prepare the change: {exc}")
+            return 1
+
+        if proposal["kind"] == "facts":
+            if not proposal["delta"]:
+                print("nothing to change: the requirement already has that value.")
+                return 0
+            print("Requirement change")
+            for key, new in sorted(proposal["delta"].items()):
+                print(f"  {key}: {proposal['old_values'][key]!r} -> {new!r}")
+            print(f"\nAffected steps ({len(proposal['affected'])}):")
+            for step_id in proposal["affected"]:
+                for reason in proposal["reasons"].get(step_id, []):
+                    print(f"  {step_id:<24}{reason}")
+            reused = [s.id for s in workflow.graph if s.id not in set(proposal["affected"])]
+            if reused:
+                print(f"\nReused unchanged ({len(reused)}): {', '.join(sorted(reused))}")
+        else:
+            diff = proposal["diff"]
+            print("The request did not match an existing requirement, so the plan was revised.")
+            for label in ("added", "removed"):
+                if diff[label]:
+                    print(f"  {label}: {', '.join(diff[label])}")
+            if diff["changed"]:
+                print(f"  changed: {', '.join(sorted(diff['changed']))}")
+
+        if not args.yes:
+            answer = input("\nApply this change and re-run the affected steps? [y/N] ")
+            if answer.strip().lower() not in {"y", "yes"}:
+                print("cancelled; nothing was changed.")
+                return 0
+
+        workflow.apply_change(proposal, confirmed=True, rerun=not args.no_rerun)
+        workflow.print_summary()
+        _exports(workflow, args)
+        return 0
+    finally:
+        workflow.close()
+
+
 def cmd_runs(args: argparse.Namespace) -> int:
     with StateManager() as state:
         runs = state.list_runs(limit=args.limit)
@@ -584,6 +639,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_resume.add_argument("run_id")
     p_resume.add_argument("--json"), p_resume.add_argument("--csv"), p_resume.add_argument("--html")
     p_resume.set_defaults(func=cmd_resume)
+
+    p_change = sub.add_parser(
+        "change", help="change a requirement and re-run only what it affects")
+    p_change.add_argument("run_id")
+    p_change.add_argument("request", help='e.g. "use PostgreSQL instead of MongoDB"')
+    p_change.add_argument("--yes", action="store_true",
+                          help="skip the confirmation prompt")
+    p_change.add_argument("--no-rerun", action="store_true",
+                          help="apply the change but do not execute the affected steps")
+    p_change.add_argument("--json"), p_change.add_argument("--csv"), p_change.add_argument("--html")
+    p_change.set_defaults(func=cmd_change)
 
     p_runs = sub.add_parser("runs", help="list persisted runs")
     p_runs.add_argument("--limit", type=int, default=25)

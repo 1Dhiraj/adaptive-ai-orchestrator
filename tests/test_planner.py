@@ -9,7 +9,9 @@ import pytest
 from orchestrator.graph import DependencyGraph
 from orchestrator.llm import LLMResponse, LLMProvider
 from orchestrator.models import LLMUsage
-from orchestrator.planner import PlanningError, TaskPlanner, extract_json, plan_from_json
+from orchestrator.planner import (PlanningError, TaskPlanner, extract_json,
+                                  filter_inputs, plan_from_json)
+from orchestrator.inputs import InputRequest
 
 
 class ScriptedProvider(LLMProvider):
@@ -68,6 +70,45 @@ class TestExtractJson:
 
 
 class TestPlanning:
+    def test_paint_action_cannot_finish_as_tool_free_prose(self):
+        plan = json.dumps({"tasks": [{
+            "id": "execute", "role": "workflow_operator",
+            "description": "Complete the digital work", "depends_on": [], "tool": None,
+        }]})
+        with pytest.raises(PlanningError, match="no action tool"):
+            TaskPlanner(llm=ScriptedProvider(plan)).plan(
+                "Open Paint, draw a house, then save the picture")
+
+    def test_tool_setup_questions_are_not_user_inputs(self):
+        requests = [
+            InputRequest(
+                name="desktop_native_ready",
+                prompt="Have you set up 'desktop_native'?",
+                type="boolean"),
+            InputRequest(name="city", prompt="Which city?", type="text"),
+        ]
+
+        assert [request.name for request in filter_inputs(requests)] == ["city"]
+
+    def test_pdf_request_gets_a_real_terminal_artifact_step(self):
+        from orchestrator.tools import default_tool_manager
+
+        plan = json.dumps({"tasks": [{
+            "id": "research", "role": "research",
+            "description": "Research the topic in a browser",
+            "depends_on": [], "tool": "computer_use",
+        }]})
+        result = TaskPlanner(llm=ScriptedProvider(plan)).plan(
+            "Research AI agents and give me a PDF report",
+            tools=default_tool_manager())
+
+        assert result.graph.topological_order() == ["research", "create_pdf"]
+        pdf = result.graph.get("create_pdf")
+        assert pdf.requires_tool == "artifact_store"
+        assert pdf.depends_on == ["research"]
+        assert "artifacts/report.pdf" in pdf.description
+        assert any("real PDF artifact" in repair for repair in result.repairs)
+
     def test_valid_plan_becomes_a_graph(self):
         result = TaskPlanner(llm=ScriptedProvider(VALID_PLAN)).plan("Build something")
         assert result.graph.topological_order() == ["design", "build", "test"]
@@ -80,7 +121,7 @@ class TestPlanning:
         ("Write a literature review comparing multi-agent frameworks",
          {"scope", "research", "analyse", "write", "verify"}, None),
         ("Create a weekly report in Microsoft Word",
-         {"prepare", "desktop_work", "verify"}, "hermes_desktop"),
+         {"prepare", "desktop_work", "verify"}, "computer_use"),
         ("Build a web app for managing college events",
          {"requirements", "database", "backend", "frontend", "testing"}, "workspace"),
     ])
@@ -125,6 +166,22 @@ class TestPlanning:
             verbose=False)
         assert "terminal" not in workflow.tools
 
+    def test_python_command_line_project_receives_local_coding_tools(self):
+        from orchestrator import Workflow
+        from orchestrator.llm import StubProvider
+
+        workflow = Workflow.from_description(
+            "Build a Python command-line student task manager with JSON storage and tests",
+            llm=StubProvider(), persist=False, verbose=False)
+
+        assert "workspace" in workflow.tools
+        assert "terminal" in workflow.tools
+
+    def test_plain_html_page_request_gets_coding_tools(self):
+        from orchestrator.planner import is_software_task
+
+        assert is_software_task("Create a single HTML page named greeting.html")
+
     def test_roles_are_normalised(self):
         result = TaskPlanner(llm=ScriptedProvider(VALID_PLAN)).plan("Build something")
         assert result.graph.get("test").agent_role == "testing"  # "qa" -> "testing"
@@ -141,12 +198,24 @@ class TestPlanning:
             resolved, note = TaskPlanner.resolve_tool(invented, available)
             assert resolved == expected, f"{invented} should resolve to {expected}"
 
-    def test_unresolvable_tool_is_dropped_not_left_broken(self):
+    @pytest.mark.parametrize("low_level", [
+        "desktop_native", "hermes_desktop", "web_browser_navigate",
+    ])
+    def test_low_level_ui_tools_route_through_multi_action_computer_use(self, low_level):
+        available = {"computer_use", "desktop_native", "hermes_desktop",
+                     "web_browser_navigate"}
+
+        resolved, note = TaskPlanner.resolve_tool(low_level, available)
+
+        assert resolved == "computer_use"
+        assert note and "multi-action" in note
+
+    def test_unresolvable_tool_is_preserved_for_discovery(self):
         from orchestrator.tools import default_tool_manager
 
         available = {t["name"] for t in default_tool_manager().describe()}
         resolved, note = TaskPlanner.resolve_tool("quantum_teleporter", available)
-        assert resolved is None
+        assert resolved == "quantum_teleporter"
         assert note and "does not exist" in note
 
     def test_build_graph_records_a_fuzzy_tool_repair(self):
@@ -161,6 +230,20 @@ class TestPlanning:
             available_tools=available)
         assert graph.get("send").requires_tool == "email"
         assert any("email_dispatcher" in r for r in repairs)
+
+    def test_adaptive_email_owns_gmail_without_redundant_browser_step(self):
+        graph, repairs = TaskPlanner.build_graph([
+            {"id": "open_gmail", "role": "operator",
+             "description": "Open the Gmail browser login page to prepare the email",
+             "depends_on": [], "tool": "computer_use"},
+            {"id": "send", "role": "writer",
+             "description": "Draft and send the requested hello email",
+             "depends_on": ["open_gmail"], "tool": "adaptive_email"},
+        ], available_tools={"computer_use", "adaptive_email"})
+
+        assert graph.topological_order() == ["send"]
+        assert graph.get("send").depends_on == []
+        assert any("adaptive_email owns Gmail" in repair for repair in repairs)
 
     def test_known_alias_resolves_without_noise(self):
         from orchestrator.tools import default_tool_manager
@@ -198,15 +281,61 @@ class TestPlanning:
         result = TaskPlanner(llm=ScriptedProvider(VALID_PLAN)).plan("x")
         assert result.usage.calls == 1
 
-    def test_unusable_response_falls_back_to_a_generic_plan(self):
-        result = TaskPlanner(llm=ScriptedProvider("I'd be happy to help!")).plan("Build an app")
-        assert result.used_fallback_plan
-        assert len(result.graph) == 5
-        result.graph.validate()
+    def test_scalar_fact_values_are_normalised_to_text(self):
+        """JSON-mode models may preserve numeric clarification answers.
 
-    def test_empty_task_list_falls_back(self):
-        result = TaskPlanner(llm=ScriptedProvider('{"tasks": []}')).plan("x")
-        assert result.used_fallback_plan
+        The typed fact store intentionally holds strings, so the planner's
+        model-output boundary must normalise JSON values before validation.
+        """
+        plan = json.dumps({
+            "tasks": [{
+                "id": "report", "role": "writer", "description": "Write it",
+                "depends_on": [], "assumes": ["report_length", "include_sources", "scene_elements"],
+            }],
+            "facts": [
+                {"key": "report_length", "value": 800, "owner": "report", "aliases": []},
+                {"key": "include_sources", "value": True, "owner": "report", "aliases": []},
+                {"key": "scene_elements", "value": ["roof", "sun"], "owner": "report", "aliases": []},
+            ],
+        })
+
+        result = TaskPlanner(llm=ScriptedProvider(plan)).plan("Write a report")
+
+        assert result.graph.facts["report_length"].value == "800"
+        assert result.graph.facts["include_sources"].value == "true"
+        assert result.graph.facts["scene_elements"].value == '["roof", "sun"]'
+        assert sum("normalised fact" in repair for repair in result.repairs) == 3
+
+    def test_unusable_response_retries_then_fails_closed(self):
+        provider = ScriptedProvider("I'd be happy to help!")
+        with pytest.raises(PlanningError, match="after 3 attempts"):
+            TaskPlanner(llm=provider).plan("Build an app")
+        assert len(provider.prompts) == 3
+
+    def test_empty_task_list_retries_then_fails_closed(self):
+        provider = ScriptedProvider('{"tasks": []}')
+        with pytest.raises(PlanningError, match="No fallback plan was created"):
+            TaskPlanner(llm=provider).plan("x")
+        assert len(provider.prompts) == 3
+
+    def test_invalid_first_response_can_be_repaired_by_the_model(self):
+        class RepairingProvider(ScriptedProvider):
+            def _generate(self, prompt, system, json_mode, metadata=None):
+                self.prompts.append(prompt)
+                text = "not json" if len(self.prompts) == 1 else VALID_PLAN
+                return LLMResponse(
+                    text=text,
+                    usage=LLMUsage(calls=1, prompt_tokens=10, completion_tokens=20),
+                    model=self.model,
+                    latency_s=0.0,
+                )
+
+        provider = RepairingProvider("unused")
+        result = TaskPlanner(llm=provider).plan("Build an app")
+        assert result.graph.topological_order() == ["design", "build", "test"]
+        assert result.usage.calls == 2
+        assert result.used_fallback_plan is False
+        assert result.repairs[0] == "AI planner repaired its response on attempt 2"
 
     def test_stub_provider_produces_a_valid_plan(self, stub_llm):
         result = TaskPlanner(llm=stub_llm).plan("Build a task manager with auth")
@@ -293,3 +422,44 @@ class TestPlanFromFile:
         path = tmp_path / "plan.json"
         path.write_text(json.dumps(json.loads(VALID_PLAN)["tasks"]), encoding="utf-8")
         assert len(plan_from_json(str(path))) == 3
+
+
+class TestSoftwareTaskDetection:
+    """Whether the coding tools get attached at all.
+
+    This is not a cosmetic classification. A miss means `workspace` and
+    `terminal` are never registered, so every step that needed to write a file
+    fails with "workspace: not registered" -- after the plan has already been
+    paid for. Plenty of ordinary names for software say nothing about being
+    software, which is exactly where it used to fail.
+    """
+
+    @pytest.mark.parametrize("description", [
+        "Build a task manager with auth, a Kanban board and a Postgres database",
+        "Build a URL shortener service",
+        "Build an expense tracker",
+        "Create a chatbot",
+        "Build a Discord bot",
+        "Create a REST API for users",
+        "Build a web app with auth",
+        "Write a script to rename files",
+    ])
+    def test_software_is_recognised(self, description):
+        from orchestrator.planner import is_software_task
+
+        assert is_software_task(description)
+
+    @pytest.mark.parametrize("description", [
+        "Research three frameworks and write a report",
+        "Plan a birthday party",
+        "Summarise this document",
+        "Write a poem about autumn",
+        "Draft an email to the team",
+        "Open example.com and read the heading",
+    ])
+    def test_ordinary_work_is_not_mistaken_for_software(self, description):
+        # Over-matching is its own cost: it attaches a shell and a workspace
+        # to a step that only ever needed to write prose.
+        from orchestrator.planner import is_software_task
+
+        assert not is_software_task(description)

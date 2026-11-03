@@ -3,347 +3,1662 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Adaptive AI Task Orchestrator</title>
+<meta name="theme-color" content="#147d70">
+<title>Adaptive AI Task Orchestrator · Your workspace</title>
 <style>
-  :root {
-    color-scheme: dark;
-    --bg:#0f1115; --panel:#161a23; --panel-2:#12151d; --line:#242a36;
-    --text:#e8ecf4; --muted:#8b93a7; --accent:#6ea8fe;
-    --done:#2ecc71; --reused:#3498db; --failed:#e74c3c; --paused:#f39c12;
-    --running:#9b59b6; --pending:#5d6470; --cancelled:#7f8c8d;
+:root {
+  color-scheme:light;
+  --bg:#f8f9fb;
+  --panel:#fff;
+  --panel-2:#f7f9fa;
+  --line:#e5e9ed;
+  --text:#202a35;
+  --muted:#697586;
+  --accent:#147d70;
+  --done:#137c5b;
+  --reused:#306db6;
+  --failed:#c43f46;
+  --paused:#a66b13;
+  --running:#147d70;
+  --pending:#778394;
+  --cancelled:#697586;
+}
+* {
+  box-sizing:border-box
+}
+[hidden] {
+  display:none!important
+}
+body {
+  margin:0;
+  background:var(--bg);
+  color:var(--text);
+  font:14px/1.55 "Segoe UI",system-ui,-apple-system,sans-serif;
+}
+button,input,select,textarea {
+  font:inherit
+}
+button,a,input,textarea,select {
+  touch-action:manipulation
+}
+button {
+  cursor:pointer;
+  border:1px solid var(--line);
+  border-radius:8px;
+  background:#fff;
+  color:var(--text);
+  padding:9px 15px;
+  font-weight:600;
+  transition:background .15s,border-color .15s;
+}
+button:hover:not(:disabled) {
+  background:#f0f4f3;
+  border-color:#bccdc9;
+}
+button:disabled {
+  opacity:.45;
+  cursor:not-allowed;
+}
+button.primary {
+  background:var(--accent);
+  border-color:var(--accent);
+  color:white;
+}
+button.primary:hover:not(:disabled) {
+  background:#10685d
+}
+button.danger {
+  color:#b43440;
+  background:#fff8f8;
+  border-color:#f1d7da;
+}
+a {
+  color:var(--accent)
+}
+button:focus-visible,a:focus-visible,summary:focus-visible {
+  outline:3px solid #8ed4c6;
+  outline-offset:3px;
+}
+input,select,textarea {
+  background:white;
+  color:var(--text);
+  border:1px solid #d7dfe5;
+  border-radius:8px;
+  padding:10px 12px;
+  max-width:100%;
+}
+input,textarea {
+  width:100%
+}
+input:focus,textarea:focus,select:focus {
+  outline:2px solid #b9e1d8;
+  outline-offset:1px;
+  border-color:var(--accent);
+}
+textarea {
+  resize:vertical;
+  min-height:90px;
+}
+input[type=checkbox] {
+  width:auto;
+  accent-color:var(--accent);
+}
+h1,h2,h3,p {
+  margin-top:0
+}
+h1 {
+  font-size:30px;
+  font-weight:650;
+  letter-spacing:-1px;
+  line-height:1.25;
+}
+h2 {
+  font-size:16px;
+  letter-spacing:-.25px;
+  font-weight:650;
+}
+h3 {
+  font-size:14px
+}
+.icon {
+  width:19px;
+  height:19px;
+  flex-shrink:0;
+  fill:none;
+  stroke:currentColor;
+  stroke-width:1.7;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+}
+.sidebar {
+  width:238px;
+  position:fixed;
+  inset:0 auto 0 0;
+  background:#fff;
+  border-right:1px solid var(--line);
+  display:flex;
+  flex-direction:column;
+  padding:29px 18px 18px;
+  z-index:30;
+}
+.brand {
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:0 10px 29px;
+  font-size:21px;
+  font-weight:700;
+  letter-spacing:-.6px;
+}
+.brand-mark {
+  display:grid;
+  place-items:center;
+  width:34px;
+  height:36px;
+  border-radius:10px;
+  background:var(--accent);
+  color:#fff;
+}
+.brand-mark .icon {
+  width:23px;
+  height:23px;
+}
+.brand small {
+  display:block;
+  font-size:10px;
+  letter-spacing:1.5px;
+  text-transform:uppercase;
+  color:var(--muted);
+  font-weight:600;
+  margin-top:-3px;
+}
+.sidebar #btn-new {
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:9px;
+  width:100%;
+  margin-bottom:27px;
+}
+.nav-label {
+  font-size:10px;
+  letter-spacing:1.2px;
+  font-weight:700;
+  color:#8b96a4;
+  padding:0 13px;
+  margin-bottom:9px;
+}
+.nav {
+  display:grid;
+  gap:5px;
+}
+.nav button {
+  border:0;
+  background:transparent;
+  text-align:left;
+  display:flex;
+  align-items:center;
+  gap:12px;
+  font-size:13px;
+  font-weight:500;
+  padding:11px 13px;
+  color:#626f7f;
+}
+.nav button.active {
+  color:#116f63;
+  background:#eaf5f1;
+  font-weight:650;
+}
+.nav-count {
+  margin-left:auto;
+  background:#d7eee5;
+  padding:0 6px;
+  border-radius:5px;
+  font-size:11px;
+}
+.sidebar-bottom {
+  margin-top:auto;
+  padding-top:28px;
+}
+.workspace-card {
+  display:flex;
+  gap:10px;
+  align-items:center;
+  border-top:1px solid var(--line);
+  padding:20px 10px 0;
+}
+.avatar {
+  height:33px;
+  width:33px;
+  display:grid;
+  place-items:center;
+  border-radius:9px;
+  background:#edf0f5;
+  color:#67768c;
+  font-weight:600;
+}
+.workspace-card b {
+  font-size:12px;
+  display:block;
+}
+.workspace-card small {
+  font-size:11px;
+  color:var(--muted);
+}
+.app {
+  margin-left:238px;
+  min-height:100vh;
+}
+.topbar {
+  height:76px;
+  padding:0 42px;
+  display:flex;
+  align-items:center;
+  gap:12px;
+  background:rgba(255,255,255,.8);
+  border-bottom:1px solid var(--line);
+}
+.breadcrumb {
+  font-size:12px;
+  color:#87909b;
+  display:flex;
+  align-items:center;
+  gap:13px;
+}
+.breadcrumb b {
+  font-weight:500;
+  color:#475565;
+}
+.topbar-right {
+  margin-left:auto;
+  display:flex;
+  align-items:center;
+  gap:14px;
+}
+.pill {
+  font-size:11px;
+  font-weight:600;
+  padding:4px 8px;
+  background:#eef1f4;
+  color:#637181;
+  border-radius:6px;
+  white-space:nowrap;
+}
+.pill.on {
+  color:#12735a;
+  background:#edf7f1;
+}
+.pill.off {
+  color:#ad3d43;
+  background:#fff0ef;
+}
+.text-button {
+  background:transparent;
+  border:0;
+  padding:5px;
+  color:var(--muted);
+  font-size:12px;
+}
+.content {
+  max-width:1240px;
+  margin:0 auto;
+  padding:38px 48px 36px;
+}
+.page-heading {
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:20px;
+  margin-bottom:29px;
+}
+.eyebrow {
+  font-size:10px;
+  letter-spacing:1.4px;
+  text-transform:uppercase;
+  color:var(--accent);
+  font-weight:700;
+  margin-bottom:13px;
+}
+.page-heading h1 {
+  margin-bottom:8px
+}
+.subtitle {
+  color:var(--muted);
+  font-size:13px;
+  margin-bottom:0;
+}
+.hero {
+  max-width:800px;
+  margin:34px auto 0;
+}
+.hero h1 {
+  font-size:36px;
+  letter-spacing:-1.3px;
+  margin-bottom:12px;
+}
+.hero .subtitle {
+  font-size:14px
+}
+.hero-intro {
+  margin-bottom:28px
+}
+.composer {
+  background:#fff;
+  border:1px solid #dbe3e5;
+  border-radius:14px;
+  padding:20px 21px 15px;
+  box-shadow:0 5px 22px #223c4a05;
+}
+.composer:focus-within {
+  border-color:#72b9a9;
+  box-shadow:0 0 0 3px #147d700a;
+}
+.composer label {
+  font-size:12px;
+  font-weight:600;
+  color:#445260;
+}
+.composer textarea {
+  border:0;
+  outline:none;
+  box-shadow:none;
+  background:transparent;
+  padding:11px 0;
+  min-height:124px;
+  font-size:15px;
+  line-height:1.7;
+  resize:vertical;
+}
+.composer textarea:focus {
+  outline:none
+}
+.composer textarea::placeholder {
+  color:#9ba5af
+}
+.composer-footer {
+  display:flex;
+  gap:14px;
+  align-items:center;
+  justify-content:space-between;
+  border-top:1px solid #eef0f2;
+  padding-top:14px;
+}
+.composer-footer .hint {
+  margin:0;
+  font-size:11px;
+  display:flex;
+  align-items:center;
+  gap:6px;
+}
+.composer-footer button {
+  display:flex;
+  gap:12px;
+  align-items:center;
+}
+.options {
+  font-size:12px;
+  color:var(--muted);
+  margin-top:13px;
+}
+.options summary {
+  cursor:pointer;
+  width:fit-content;
+}
+.options .row {
+  margin-top:12px
+}
+.example-label {
+  display:flex;
+  align-items:center;
+  gap:10px;
+  font-size:11px;
+  color:#8a949f;
+  margin:26px 0 14px;
+}
+.example-label:after {
+  content:"";
+  height:1px;
+  background:var(--line);
+  flex:1;
+}
+.examples {
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:12px;
+}
+.example {
+  padding:17px;
+  text-align:left;
+  background:#fff;
+  border:1px solid var(--line);
+  border-radius:10px;
+  font-weight:400;
+}
+.example .example-icon {
+  display:grid;
+  place-items:center;
+  background:#edf5f3;
+  color:var(--accent);
+  border-radius:7px;
+  width:31px;
+  height:31px;
+  margin-bottom:13px;
+}
+.example:nth-child(2) .example-icon {
+  background:#f0edfa;
+  color:#8170b1;
+}
+.example:nth-child(3) .example-icon {
+  background:#fff4e8;
+  color:#b58a50;
+}
+.example b {
+  font-size:12px;
+  display:block;
+  margin-bottom:5px;
+}
+.example p {
+  font-size:11px;
+  line-height:1.6;
+  color:var(--muted);
+  margin:0;
+}
+.section-heading {
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  margin:34px 0 14px;
+}
+.section-heading h2 {
+  margin:0;
+  font-size:14px;
+}
+.recent-list {
+  border:1px solid var(--line);
+  background:#fff;
+  border-radius:11px;
+  overflow:hidden;
+}
+.run-row {
+  width:100%;
+  display:flex;
+  gap:13px;
+  align-items:center;
+  text-align:left;
+  padding:16px 18px;
+  border:0;
+  border-bottom:1px solid #edf0f2;
+  border-radius:0;
+  font-weight:400;
+}
+.run-row:last-child {
+  border-bottom:0
+}
+.run-symbol {
+  display:grid;
+  place-items:center;
+  width:33px;
+  height:33px;
+  border-radius:8px;
+  background:#f2f5f7;
+  color:#758693;
+}
+.run-copy {
+  min-width:0;
+  flex:1;
+}
+.run-copy b {
+  font-size:12px;
+  display:block;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  font-weight:600;
+}
+.run-copy small {
+  color:#89939f;
+  font-size:10px;
+}
+.run-row>.icon {
+  color:#8995a0;
+  width:15px;
+}
+.onboarding {
+  display:flex;
+  justify-content:space-between;
+  margin:25px 0 0;
+  padding-top:20px;
+  border-top:1px solid var(--line);
+  color:#88949f;
+  font-size:10px;
+  gap:10px;
+}
+.onboarding span {
+  display:flex;
+  align-items:center;
+  gap:7px;
+}
+.onboarding i {
+  font-style:normal;
+  color:#6b887e;
+  border:1px solid #d9e4df;
+  border-radius:50%;
+  width:20px;
+  height:20px;
+  display:grid;
+  place-items:center;
+}
+.panel {
+  background:#fff;
+  border:1px solid var(--line);
+  border-radius:12px;
+  padding:22px;
+  margin-bottom:18px;
+  min-width:0;
+}
+.panel h2 {
+  margin-bottom:15px
+}
+.row {
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  align-items:center;
+}
+.grow {
+  flex:1 1 150px
+}
+.hint,.desc,.spec {
+  font-size:12px;
+  color:var(--muted);
+  line-height:1.65;
+  margin:7px 0;
+}
+.empty {
+  padding:30px 20px;
+  text-align:center;
+  color:#84909d;
+  font-size:12px;
+}
+.empty b {
+  display:block;
+  color:#596674;
+  font-size:13px;
+  margin-bottom:5px;
+}
+.artifact-file {
+  padding:11px 0;
+  border-bottom:1px solid #eef1f3;
+}
+.artifact-file:last-child {
+  border-bottom:0;
+}
+.artifact-path,.artifact-location {
+  font:11px/1.55 ui-monospace,Consolas,monospace;
+  color:#66727f;
+  overflow-wrap:anywhere;
+}
+.artifact-viewer {
+  margin-top:18px;
+  padding-top:18px;
+  border-top:1px solid var(--line);
+}
+.artifact-viewer-head {
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-start;
+  gap:16px;
+  margin-bottom:12px;
+}
+.artifact-viewer h3 {
+  font-size:15px;
+  margin:3px 0;
+}
+.artifact-viewer pre {
+  background:#f6f8fa;
+  border:1px solid var(--line);
+  padding:17px;
+  border-radius:7px;
+  font:12px/1.7 ui-monospace,Consolas,monospace;
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+  max-height:620px;
+  overflow:auto;
+}
+.artifact-viewer iframe {
+  width:100%;
+  min-height:620px;
+  border:1px solid var(--line);
+  border-radius:7px;
+  background:#fff;
+}
+.view {
+  animation:appear .2s ease
+}
+@keyframes appear {
+  from {
+    opacity:0;
+    transform:translateY(4px);
   }
-  * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--text); font-size:14px;
-         font-family:system-ui,-apple-system,"Segoe UI",sans-serif; line-height:1.5; }
-  header { display:flex; align-items:center; gap:1rem; padding:.9rem 1.25rem;
-           border-bottom:1px solid var(--line); background:var(--panel-2);
-           position:sticky; top:0; z-index:10; flex-wrap:wrap; }
-  header h1 { font-size:1rem; margin:0; font-weight:650; letter-spacing:.01em; }
-  .pill { font-size:.72rem; padding:.15rem .55rem; border-radius:999px;
-          background:#2b3242; color:#c3cad8; font-weight:600; }
-  .pill.on { background:var(--done); color:#0f1115; }
-  .pill.off { background:var(--failed); color:#fff; }
-  main { display:grid; grid-template-columns:minmax(0,1fr) 380px; gap:1rem;
-         padding:1rem 1.25rem; align-items:start; }
-  @media (max-width:1000px){ main { grid-template-columns:1fr; } }
-  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px;
-           padding:1rem; margin-bottom:1rem; }
-  .panel h2 { font-size:.72rem; text-transform:uppercase; letter-spacing:.08em;
-              color:var(--muted); margin:0 0 .75rem; font-weight:650; }
-  input, select, textarea, button {
-    font:inherit; color:var(--text); background:var(--panel-2);
-    border:1px solid var(--line); border-radius:7px; padding:.45rem .6rem; }
-  input, textarea { width:100%; }
-  textarea { resize:vertical; min-height:64px; }
-  button { cursor:pointer; background:#232a38; border-color:#2f3747; font-weight:600; }
-  button:hover:not(:disabled) { background:#2c3444; }
-  button:disabled { opacity:.45; cursor:not-allowed; }
-  button.primary { background:var(--accent); color:#0b1020; border-color:var(--accent); }
-  button.danger  { background:#3a2226; border-color:#5a2f36; color:#ffb4bc; }
-  .row { display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; }
-  .row > * { flex:0 0 auto; }
-  .grow { flex:1 1 160px; }
-  .tiles { display:grid; gap:.6rem; grid-template-columns:repeat(auto-fit,minmax(96px,1fr)); }
-  .tile { background:var(--panel-2); border:1px solid var(--line); border-radius:8px; padding:.6rem .7rem; }
-  .tile-label { font-size:.66rem; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); }
-  .tile-value { font-size:1.15rem; font-weight:650; margin-top:.15rem; }
-  #graph { overflow-x:auto; background:var(--panel-2); border:1px solid var(--line);
-           border-radius:8px; padding:.75rem; min-height:120px; }
-  #graph svg { display:block; min-width:100%; }
-  .node rect { cursor:pointer; transition:filter .15s; }
-  .node:hover rect { filter:brightness(1.35); }
-  .log { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:.76rem;
-         max-height:340px; overflow-y:auto; background:var(--panel-2);
-         border:1px solid var(--line); border-radius:8px; padding:.6rem; }
-  .log div { padding:.12rem 0; border-bottom:1px solid #1b202a; white-space:pre-wrap;
-             word-break:break-word; }
-  .log .t { color:var(--muted); }
-  .step { border:1px solid var(--line); border-radius:8px; margin-bottom:.5rem;
-          background:var(--panel-2); }
-  .step summary { cursor:pointer; padding:.55rem .7rem; display:flex; gap:.5rem;
-                  align-items:center; flex-wrap:wrap; }
-  .step .body { padding:0 .7rem .7rem; }
-  .step pre { background:#0c0e13; border:1px solid var(--line); border-radius:6px;
-              padding:.6rem; font-size:.76rem; white-space:pre-wrap; word-break:break-word;
-              max-height:280px; overflow:auto; margin:.5rem 0 0; }
-  .badge { font-size:.66rem; padding:.1rem .45rem; border-radius:999px; font-weight:700;
-           text-transform:uppercase; letter-spacing:.04em; color:#0f1115; }
-  .badge.muted { background:#2b3242; color:#c3cad8; font-weight:600; }
-  .badge.warn { background:var(--paused); }
-  .meta { color:var(--muted); font-size:.74rem; margin-left:auto; }
-  .desc { color:#aab3c5; font-size:.82rem; margin:.35rem 0 0; }
-  table { width:100%; border-collapse:collapse; font-size:.8rem; }
-  th,td { text-align:left; padding:.35rem .5rem; border-bottom:1px solid var(--line); }
-  th { color:var(--muted); font-size:.66rem; text-transform:uppercase; letter-spacing:.06em; }
-  .hint { color:var(--muted); font-size:.78rem; margin:.4rem 0 0; }
-  .empty { color:var(--muted); padding:1.5rem; text-align:center; }
-  .verdict { border-radius:8px; padding:.5rem .7rem; font-size:.82rem; font-weight:600;
-             margin-bottom:.6rem; }
-  .verdict.ok    { background:#12301f; border:1px solid var(--done);   color:#8ff0b5; }
-  .verdict.warn  { background:#3a2f12; border:1px solid var(--paused); color:#ffd894; }
-  .verdict.block { background:#3a1c20; border:1px solid var(--failed); color:#ffb4bc; }
-  .spec { font-size:.78rem; color:#aab3c5; padding:.2rem 0; }
-  .spec b { color:var(--text); font-family:ui-monospace,monospace; }
-  .req-status { font-size:.62rem; padding:.08rem .4rem; border-radius:999px;
-                font-weight:700; text-transform:uppercase; color:#0f1115; }
-  .setup { font-family:ui-monospace,monospace; font-size:.7rem; color:var(--paused);
-           display:block; margin-top:.15rem; word-break:break-all; }
-  #ask-panel { border-color:var(--paused); box-shadow:0 0 0 1px rgba(243,156,18,.25); }
-  .ask-group { border:1px solid var(--line); border-radius:8px; padding:.65rem .75rem;
-               margin-bottom:.6rem; background:var(--panel-2); }
-  .ask-group h3 { margin:0 0 .5rem; font-size:.8rem; font-family:ui-monospace,monospace; }
-  .ask-field { margin-bottom:.55rem; }
-  .ask-field label { display:block; font-size:.8rem; margin-bottom:.2rem; }
-  .ask-field .why { color:var(--muted); font-size:.72rem; display:block; margin-bottom:.25rem; }
-  .ask-err { color:#ffb4bc; font-size:.72rem; margin-top:.2rem; }
-  .action-card { border:1px solid var(--paused); border-radius:8px; padding:.65rem .75rem;
-                 margin-bottom:.6rem; background:#2a2113; }
-  .action-card .what { font-size:.8rem; margin:.25rem 0 .4rem; }
-  .action-card pre { max-height:150px; font-size:.72rem; }
-  #setup-panel { border-color:var(--accent); box-shadow:0 0 0 1px rgba(110,168,254,.25); }
-  .setup-card { border:1px solid var(--line); border-radius:8px; padding:.75rem .85rem;
-                margin-bottom:.6rem; background:var(--panel-2); }
-  .setup-card h3 { margin:0 0 .2rem; font-size:.9rem; }
-  .setup-card .desc { color:#aab3c5; font-size:.8rem; margin:0 0 .5rem; }
-  .setup-card .why { color:var(--accent); font-size:.78rem; margin:0 0 .5rem; }
-  .setup-card ol { margin:.3rem 0 .6rem; padding-left:1.2rem; color:#c3cad8;
-                   font-size:.78rem; line-height:1.6; }
-  .setup-card .cost { color:var(--muted); font-size:.72rem; margin-top:.4rem; }
-  .setup-card .getlink { display:inline-block; margin-bottom:.5rem; font-size:.78rem;
-                         color:var(--accent); }
-  .setup-done { color:var(--done); font-size:.82rem; padding:.5rem 0; }
-  .badge.block { background:var(--failed); color:#fff; }
-  .badge.opt { background:#2b3242; color:#c3cad8; }
-  .guide { border-color:#34415a; background:linear-gradient(135deg,#182131,#161a23); }
-  .guide-title { font-size:1rem; font-weight:700; margin-bottom:.25rem; }
-  .guide-copy { color:#c3cad8; font-size:.84rem; margin-bottom:.65rem; }
-  .progress-track { height:8px; border-radius:999px; background:#252c38; overflow:hidden; }
-  .progress-fill { height:100%; width:0; border-radius:inherit; background:var(--accent);
-                   transition:width .25s ease; }
-  .progress-note { color:var(--muted); font-size:.72rem; margin-top:.3rem; }
-
-  /* Clear, calm application theme. Advanced workflow controls stay available
-     without competing with the one action a new user needs first. */
-  :root {
-    color-scheme:light; --bg:#f5f7fb; --panel:#ffffff; --panel-2:#f8fafc;
-    --line:#dbe2ea; --text:#172033; --muted:#667085; --accent:#2563eb;
-    --done:#16835f; --reused:#2563eb; --failed:#c53939; --paused:#b76e00;
-    --running:#6d4aff; --pending:#7b8494; --cancelled:#697386;
+  to {
+    opacity:1;
+    transform:translateY(0);
   }
-  body { background:var(--bg); color:var(--text); font-size:15px; }
-  header { background:rgba(255,255,255,.96); border-color:var(--line); padding:1rem max(1.25rem,calc((100vw - 1440px)/2)); box-shadow:0 1px 5px rgba(16,24,40,.06); }
-  header h1 { font-size:1.08rem; color:#16213b; }
-  .brand-sub { color:var(--muted); font-size:.78rem; }
-  main { max-width:1440px; margin:0 auto; grid-template-columns:minmax(0,1fr) 390px; gap:1.25rem; padding:1.35rem; }
-  .panel { border-color:var(--line); border-radius:14px; box-shadow:0 1px 3px rgba(16,24,40,.05); padding:1.15rem; }
-  .panel h2 { color:#475467; font-size:.76rem; }
-  input,select,textarea,button { color:var(--text); background:#fff; border-color:#cfd8e3; border-radius:9px; min-height:38px; }
-  input:focus,select:focus,textarea:focus,button:focus-visible { outline:3px solid rgba(37,99,235,.18); border-color:var(--accent); }
-  textarea#desc { min-height:118px; font-size:1rem; padding:.8rem; }
-  button { background:#f3f6fa; border-color:#ccd5e1; color:#344054; }
-  button:hover:not(:disabled) { background:#e9eff7; }
-  button.primary { color:#fff; background:var(--accent); border-color:var(--accent); }
-  button.danger { background:#fff5f5; border-color:#f1c7c7; color:#a92727; }
-  .pill,.badge.muted,.badge.opt { background:#e9eef5; color:#475467; }
-  .pill.on { background:#d8f3e8; color:#116149; }
-  .pill.off { background:#fee4e2; color:#9b2c2c; }
-  .guide { background:linear-gradient(135deg,#eef4ff,#f8fbff); border-color:#b9cdfa; }
-  .guide-copy,.desc,.spec,.setup-card .desc { color:#5b6678; }
-  .progress-track { background:#dfe7f2; }
-  #graph,.step,.tile,.ask-group,.setup-card,.log { background:var(--panel-2); border-color:var(--line); }
-  .step pre { background:#f2f5f9; color:#263248; border-color:var(--line); }
-  .log div { border-color:#e6ebf1; }
-  .verdict.ok { background:#ecfdf3; color:#126747; border-color:#8ed8bb; }
-  .verdict.warn { background:#fff8e8; color:#8a5700; border-color:#e8c472; }
-  .verdict.block { background:#fff1f0; color:#9f2929; border-color:#e9aaaa; }
-  .action-card { background:#fff9ec; }
-  .advanced { margin-bottom:1rem; }
-  .advanced > summary { cursor:pointer; list-style:none; background:#fff; border:1px solid var(--line); border-radius:12px; padding:.85rem 1rem; font-weight:700; color:#344054; }
-  .advanced > summary::after { content:"Open"; float:right; color:var(--accent); font-size:.78rem; font-weight:600; }
-  .advanced[open] > summary { margin-bottom:1rem; }
-  .advanced[open] > summary::after { content:"Close"; }
-  .advanced .panel { box-shadow:none; }
-  dialog { border:0; border-radius:16px; padding:1.4rem; width:min(440px,calc(100vw - 2rem));
-           box-shadow:0 24px 60px rgba(16,24,40,.25); color:var(--text); }
-  dialog::backdrop { background:rgba(16,24,40,.45); }
-  @media (max-width:1000px) { main { grid-template-columns:1fr; padding:1rem; } aside { order:2; } }
-  @media (max-width:640px) { header { padding:.75rem; } .brand-sub { display:none; } header #run-picker { max-width:100%!important; width:100%; } .row > button { flex:1 1 auto; } main { padding:.7rem; } }
-</style>
-</head>
+}
+.task-title {
+  max-width:750px;
+  font-size:25px;
+  overflow-wrap:anywhere;
+}
+.task-toolbar {
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+  margin-bottom:24px;
+}
+.tabs {
+  display:flex;
+  gap:25px;
+  border-bottom:1px solid var(--line);
+  margin-bottom:24px;
+  overflow-x:auto;
+}
+.tabs button {
+  border:0;
+  border-radius:0;
+  padding:12px 0;
+  background:transparent;
+  white-space:nowrap;
+  color:var(--muted);
+  font-size:12px;
+  border-bottom:2px solid transparent;
+}
+.tabs button.active {
+  color:var(--accent);
+  border-bottom-color:var(--accent);
+}
+.overview-grid {
+  display:grid;
+  grid-template-columns:minmax(0,1fr) 290px;
+  gap:20px;
+  align-items:start;
+}
+.guide {
+  background:#f0f7f4;
+  border-color:#d7e9e1;
+}
+.guide h2 {
+  color:#6f8d80;
+  font-size:10px;
+  text-transform:uppercase;
+  letter-spacing:1px;
+}
+.guide-title {
+  font-size:19px;
+  font-weight:600;
+  margin-bottom:5px;
+  letter-spacing:-.4px;
+}
+.guide-copy {
+  font-size:12px;
+  color:#648075;
+  margin-bottom:18px;
+}
+.progress-track {
+  height:5px;
+  background:#d9e8e1;
+  border-radius:99px;
+  overflow:hidden;
+}
+.progress-fill {
+  height:100%;
+  background:var(--accent);
+  width:0;
+  transition:width .3s;
+}
+.progress-note {
+  font-size:10px;
+  color:#709184;
+  margin-top:8px;
+}
+.plan-item {
+  display:flex;
+  gap:12px;
+  padding:15px 0;
+  border-bottom:1px solid #eef1f3;
+}
+.plan-item:last-child {
+  border:0
+}
+.step-number {
+  flex-shrink:0;
+  width:27px;
+  height:27px;
+  display:grid;
+  place-items:center;
+  border:1px solid #dce5e1;
+  background:#f7faf8;
+  border-radius:50%;
+  color:#6f877c;
+  font-size:11px;
+}
+.plan-item b {
+  font-size:12px;
+  font-weight:600;
+}
+.plan-item p {
+  margin:3px 0 6px;
+  color:var(--muted);
+  font-size:12px;
+}
+.badge,.req-status {
+  font-size:10px;
+  display:inline-block;
+  border-radius:5px;
+  padding:2px 7px;
+  color:#fff;
+  font-weight:600;
+}
+.badge.muted,.badge.opt {
+  background:#eff2f5;
+  color:#6d7887;
+}
+.badge.warn {
+  background:#fff0d6;
+  color:#926312;
+}
+.badge.block {
+  background:#fae9e9;
+  color:#ac3b3b;
+}
+.tiles {
+  display:grid;
+  grid-template-columns:repeat(4,1fr);
+  gap:10px;
+}
+.tile {
+  padding:15px;
+  border:1px solid var(--line);
+  border-radius:9px;
+}
+.tile-label {
+  font-size:10px;
+  color:var(--muted);
+}
+.tile-value {
+  font-size:21px;
+  font-weight:600;
+  margin-top:5px;
+}
+.step {
+  border:1px solid var(--line);
+  border-radius:10px;
+  margin-bottom:10px;
+  background:#fff;
+  overflow:hidden;
+}
+.step summary {
+  cursor:pointer;
+  padding:16px;
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+  align-items:center;
+}
+.step summary b {
+  font-size:13px
+}
+.step .body {
+  padding:0 16px 16px
+}
+.meta {
+  font-size:10px;
+  color:#8a95a0;
+  margin-left:auto;
+}
+.step pre,.action-card pre {
+  background:#f6f8fa;
+  border:1px solid var(--line);
+  padding:15px;
+  border-radius:7px;
+  font:12px/1.7 ui-monospace,Consolas,monospace;
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+  max-height:440px;
+  overflow:auto;
+}
+.step .row button {
+  font-size:11px;
+  padding:6px 10px;
+}
+table {
+  width:100%;
+  border-collapse:collapse;
+  font-size:12px;
+}
+td,th {
+  padding:11px 7px;
+  border-bottom:1px solid var(--line);
+  text-align:left;
+  overflow-wrap:anywhere;
+}
+th {
+  color:var(--muted);
+  font-size:10px;
+}
+table button {
+  font-size:11px;
+  padding:5px 8px;
+}
+.verdict {
+  padding:12px;
+  border-radius:8px;
+  font-size:12px;
+  margin-bottom:14px;
+}
+.verdict.ok {
+  background:#edf8f0;
+  color:#287850;
+}
+.verdict.warn {
+  background:#fff7e8;
+  color:#936c25;
+}
+.verdict.block {
+  background:#fff0ed;
+  color:#ad4b3b;
+}
+.setup {
+  display:block;
+  font-size:11px;
+  overflow-wrap:anywhere;
+  margin-top:5px;
+  color:#9b7324;
+}
+.spec {
+  padding-bottom:8px
+}
+.spec b {
+  font-weight:600;
+  color:#435865;
+}
+.advanced {
+  margin:16px 0
+}
+.advanced>summary {
+  cursor:pointer;
+  color:#637280;
+  font-size:12px;
+  padding:10px 0;
+}
+.advanced .panel {
+  margin-top:12px
+}
+.ask-group,.action-card,.setup-card {
+  padding:18px;
+  border:1px solid var(--line);
+  border-radius:9px;
+  margin:12px 0;
+  background:white;
+}
+.ask-field {
+  margin-bottom:16px
+}
+.ask-field label {
+  display:block;
+  font-size:12px;
+  font-weight:600;
+  margin-bottom:6px;
+}
+.why {
+  display:block;
+  font-size:11px;
+  color:var(--muted);
+  margin-bottom:8px;
+}
+.ask-err {
+  font-size:12px;
+  color:var(--failed);
+  margin-top:7px;
+}
+.action-card,#ask-panel {
+  background:#fffaf0;
+  border-color:#eddbb5;
+}
+.chat-intro {
+  margin:-7px 0 15px;
+  color:var(--muted);
+  font-size:12px;
+  line-height:1.6;
+}
+.chat-message {
+  display:flex;
+  align-items:flex-start;
+  gap:10px;
+  margin:12px 0;
+}
+.chat-message.user {
+  flex-direction:row-reverse;
+}
+.chat-avatar {
+  flex:0 0 28px;
+  width:28px;
+  height:28px;
+  display:grid;
+  place-items:center;
+  border-radius:50%;
+  background:#dfece6;
+  color:#557568;
+  font-size:9px;
+  font-weight:700;
+}
+.chat-message.user .chat-avatar {
+  background:#e9eef6;
+  color:#586b86;
+}
+.chat-bubble {
+  max-width:min(760px,calc(100% - 40px));
+  padding:14px 16px;
+  border:1px solid #e4d5b6;
+  border-radius:5px 13px 13px 13px;
+  background:#fff;
+  font-size:12px;
+  line-height:1.6;
+}
+.chat-message.user .chat-bubble {
+  border-color:#dce4ee;
+  border-radius:13px 5px 13px 13px;
+  background:#f5f8fc;
+}
+.chat-workspace {
+  display:flex;
+  flex-direction:column;
+  min-height:min(72vh,720px);
+  margin-top:12px;
+}
+.chat-workspace .hero-intro { margin-bottom:12px; }
+.chat-workspace h1 { font-size:27px; margin-bottom:3px; }
+.chat-thread {
+  flex:1;
+  min-height:280px;
+  max-height:60vh;
+  overflow-y:auto;
+  padding:14px 4px 22px;
+}
+.chat-thread .chat-message { margin:16px 0; }
+.chat-thread .chat-bubble { font-size:14px; white-space:pre-wrap; }
+.chat-thread .chat-message.agent .chat-bubble { border-color:#dbe8e3; }
+.chat-thread .chat-message.user .chat-bubble { background:#eaf4f1; border-color:#d2e6df; }
+.chat-thread .chat-bubble p { margin:9px 0 0; }
+.chat-thread .chat-bubble button { margin:3px 5px 3px 0; }
+.chat-workspace .chat-composer { padding:10px 17px 12px; }
+.chat-workspace .chat-composer textarea { min-height:55px; max-height:180px; padding:7px 0; }
+#view-home.has-chat .example-label,
+#view-home.has-chat .examples,
+#view-home.has-chat .section-heading,
+#view-home.has-chat .recent-list,
+#view-home.has-chat .onboarding { display:none; }
+.chat-bubble h3 {
+  margin:0 0 7px;
+  font-size:13px;
+}
+.chat-bubble .action-card,.chat-bubble .setup-card,.chat-bubble .ask-group {
+  border:0;
+  padding:0;
+  margin:0;
+  background:transparent;
+}
+.action-card .what {
+  font-size:13px
+}
+.setup-card h3 {
+  margin-bottom:8px
+}
+.setup-card ol {
+  font-size:12px;
+  color:var(--muted);
+  padding-left:20px;
+}
+.setup-card .cost {
+  font-size:11px;
+  color:var(--muted);
+  margin-top:10px;
+}
+.getlink {
+  display:inline-block;
+  font-size:12px;
+  margin-bottom:12px;
+  overflow-wrap:anywhere;
+}
+.setup-done {
+  font-size:13px;
+  color:var(--done);
+}
+.log {
+  font:11px/1.8 ui-monospace,Consolas,monospace;
+  max-height:400px;
+  overflow:auto;
+  background:#f8fafb;
+  padding:15px;
+  border-radius:8px;
+}
+.log div {
+  border-bottom:1px solid var(--line);
+  padding:5px 0;
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+}
+.log .t {
+  color:#93a0aa
+}
+.settings-grid {
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:20px;
+  align-items:start;
+}
+#graph {
+  background:radial-gradient(#dce6e0 1px,transparent 1px);
+  background-size:18px 18px;
+  padding:18px;
+  overflow:auto;
+  border:1px solid var(--line);
+  border-radius:8px;
+}
+#graph svg {
+  display:block;
+  margin:auto;
+  max-width:100%;
+  max-height:540px;
+}
+.node {
+  cursor:pointer
+}
+.node:hover rect {
+  stroke-width:3.5
+}
+dialog {
+  border:1px solid var(--line);
+  border-radius:16px;
+  padding:28px;
+  width:min(480px,calc(100vw - 32px));
+  color:var(--text);
+  box-shadow:0 25px 80px #142d3533;
+}
+dialog::backdrop {
+  background:#1a2a3b66
+}
+.notice {
+  margin-bottom:24px;
+  border:1px solid #eadcbb;
+  background:#fffaf0;
+  border-radius:9px;
+  padding:12px 16px;
+  font-size:12px;
+  color:#886b32;
+  display:flex;
+  align-items:center;
+  gap:15px;
+}
+.notice button {
+  margin-left:auto;
+  font-size:11px;
+  padding:5px 9px;
+  white-space:nowrap;
+}
+.search {
+  max-width:320px;
+  margin-bottom:20px;
+}
+#toast {
+  position:fixed;
+  right:28px;
+  bottom:25px;
+  z-index:100;
+  max-width:min(440px,calc(100vw - 32px));
+  background:#fff;
+  border:1px solid #e6b9bb;
+  box-shadow:0 8px 35px #22324426;
+  border-radius:11px;
+  padding:15px 42px 15px 18px;
+  font-size:13px;
+  color:#ae3540;
+}
+#toast button {
+  position:absolute;
+  right:8px;
+  top:8px;
+  border:0;
+  padding:3px 7px;
+  color:inherit;
+}
+.mobile-menu {
+  display:none
+}
+.skip-link {
+  position:fixed;
+  left:250px;
+  top:-50px;
+  z-index:200;
+  background:#fff;
+  padding:10px;
+}
+.skip-link:focus {
+  top:8px
+}
+.connection-empty {
+  color:var(--muted);
+  font-size:13px;
+}
+.screen-reader {
+  position:absolute;
+  width:1px;
+  height:1px;
+  overflow:hidden;
+  clip:rect(0,0,0,0);
+}
+@media(min-width:1500px) {
+  .hero {
+    margin-top:65px
+  }
+}
+@media(max-width:1150px) {
+  .sidebar {
+    width:210px
+  }
+  .app {
+    margin-left:210px
+  }
+  .content {
+    padding:30px
+  }
+  .topbar {
+    padding:0 30px
+  }
+  .overview-grid {
+    grid-template-columns:1fr
+  }
+  .settings-grid {
+    grid-template-columns:1fr
+  }
+  .hero {
+    margin-top:15px
+  }
+}
+@media(max-width:760px) {
+  .sidebar {
+    transform:translateX(-100%);
+    transition:transform .2s;
+    width:238px;
+    box-shadow:10px 0 50px #25344822;
+  }
+  .sidebar.open {
+    transform:translateX(0)
+  }
+  .app {
+    margin-left:0
+  }
+  .mobile-menu {
+    display:block;
+    padding:4px;
+    border:0;
+    background:transparent;
+  }
+  .topbar {
+    height:62px;
+    padding:0 20px;
+  }
+  .topbar-right {
+    gap:4px
+  }
+  .breadcrumb {
+    font-size:11px
+  }
+  .content {
+    padding:25px 20px
+  }
+  .hero {
+    margin-top:12px
+  }
+  .hero h1 {
+    font-size:29px
+  }
+  .examples {
+    grid-template-columns:1fr
+  }
+  .example {
+    display:grid;
+    grid-template-columns:35px 1fr;
+    column-gap:12px;
+    padding:14px;
+  }
+  .example .example-icon {
+    grid-row:span 2;
+    margin:0;
+  }
+  .example b {
+    margin:0
+  }
+  .composer {
+    padding:17px
+  }
+  .composer-footer .hint {
+    max-width:135px;
+    font-size:10px;
+  }
+  .composer-footer button {
+    font-size:12px;
+    padding:9px 11px;
+  }
+  .onboarding {
+    flex-wrap:wrap
+  }
+  .topbar #ws-state {
+    display:none
+  }
+  .tiles {
+    grid-template-columns:repeat(2,1fr)
+  }
+  .page-heading {
+    gap:10px
+  }
+  .task-title {
+    font-size:22px
+  }
+  .panel {
+    padding:17px
+  }
+  .notice {
+    align-items:flex-start
+  }
+  .meta {
+    width:100%;
+    margin-left:0;
+  }
+  .run-row {
+    padding:14px
+  }
+  .task-toolbar button {
+    font-size:12px
+  }
+  .skip-link {
+    left:10px
+  }
+}
+@media(prefers-reduced-motion:reduce) {
+  * {
+    animation:none!important;
+    transition:none!important;
+    scroll-behavior:auto!important;
+  }
+}
+</style></head>
 <body>
-<header>
-  <h1>Adaptive AI Task Orchestrator</h1>
-  <span class="brand-sub">Describe a goal. AI plans, asks, and completes it.</span>
-  <span class="pill" id="llm-mode">llm: ?</span>
-  <span class="pill" id="ws-state">disconnected</span>
-  <span class="pill" id="identity">not signed in</span>
-  <span class="grow"></span>
-  <button id="btn-new" class="primary">New task</button>
-  <select id="run-picker" style="max-width:260px"></select>
-  <button id="btn-refresh">Refresh</button>
-  <button id="btn-login">Sign in</button>
-</header>
-
+<a class="skip-link" href="#main-content">Skip to content</a>
+<aside class="sidebar" id="sidebar" aria-label="Main navigation">
+<div class="brand">
+<span class="brand-mark">
+<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+<path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z"/></svg></span>
+<div>Orchestrator<small>Adaptive AI workspace</small></div></div>
+<button id="btn-new" class="primary">
+<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+<path d="M12 5v14M5 12h14"/></svg> New task</button>
+<div class="nav-label">WORKSPACE</div>
+<nav class="nav">
+<button data-view="home" class="active">
+<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+<rect x="3" y="3" width="7" height="7" rx="1.5"/>
+<rect x="14" y="3" width="7" height="7" rx="1.5"/>
+<rect x="3" y="14" width="7" height="7" rx="1.5"/>
+<rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>Overview</button>
+<button data-view="tasks" class="">
+<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+<rect x="5" y="4" width="14" height="17" rx="2"/>
+<path d="M9 3h6v3H9zM9 11h6m-6 5h6"/></svg>All tasks</button>
+<button data-view="connections" class="">
+<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+<path d="M8 3v5m8-5v5M6 8h12v4a6 6 0 0 1-12 0zm6 10v4"/></svg>Connections</button>
+<button data-view="automation" class="">
+<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+<circle cx="12" cy="12" r="9"/>
+<path d="M12 7v5l3 2"/></svg>Automations</button>
+<button data-view="settings" class="">
+<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+<path d="M4 7h16M4 17h16"/>
+<circle cx="9" cy="7" r="3" fill="white"/>
+<circle cx="15" cy="17" r="3" fill="white"/></svg>Settings</button></nav>
+<div class="sidebar-bottom">
+<div class="workspace-card">
+<span class="avatar">W</span>
+<div>
+<b>Your workspace</b>
+<small id="workspace-mode">Checking connection…</small></div></div></div></aside>
+<div class="app">
+<header class="topbar">
+<button id="menu-toggle" class="mobile-menu" aria-label="Toggle navigation" aria-expanded="false">
+<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+<path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+<div class="breadcrumb">Workspace <span>/</span>
+<b id="page-name">Overview</b></div>
+<div class="topbar-right">
+<span class="pill" id="ws-state">Ready</span>
+<button class="text-button" id="llm-mode" title="Open AI connection settings" data-view="connections">Checking AI…</button></div></header>
+<main class="content" id="main-content" tabindex="-1">
+<div class="notice" id="demo-notice" hidden>
+<span>You’re in demo mode. Tasks use sample AI output until you connect a model.</span>
+<button data-view="connections">Connect AI <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+<path d="M5 12h14m-5-5 5 5-5 5"/></svg></button></div>
+<section class="view" id="view-home">
+<div class="hero chat-workspace">
+<div class="hero-intro">
+<div class="eyebrow">YOUR ASSISTANT</div>
+<h1>What can I do for you?</h1>
+<p class="subtitle">Ask naturally. I’ll reply here while I work.</p></div>
+<div id="chat-thread" class="chat-thread" role="log" aria-live="polite" aria-label="Conversation"></div>
+<div class="composer chat-composer">
+<label class="screen-reader" for="desc">Message your assistant</label>
+<textarea id="desc" rows="2" placeholder="Ask me to create a file, use a website, or work on your desktop…"></textarea>
+<div class="composer-footer">
+<p class="hint">Press Enter to send · Shift+Enter for a new line</p>
+<button class="primary" id="btn-plan">Send <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+<path d="M5 12h14m-5-5 5 5-5 5"/></svg></button></div></div>
+<details class="options">
+<summary>Task preferences</summary>
+<div class="row">
+<label>
+<input type="checkbox" id="opt-parallel" checked> Work on independent steps together</label>
+<label>
+<input type="checkbox" id="opt-smart" checked> Reuse work when requirements change</label></div></details>
+<p id="plan-hint" class="screen-reader">Describe a task and send it to the agent.</p>
+<div id="home-chat-status" class="screen-reader" role="status" aria-live="polite" hidden></div>
+<div class="panel" id="clarify-panel" hidden>
+<h2>A few questions first</h2>
+<div id="clarify"></div>
+    </div>
+<div class="example-label">Not sure where to start? Try an idea</div>
+<div class="examples">
+<button class="example" data-example="app">
+<span class="example-icon">
+<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+<path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-14-2 18"/></svg></span>
+<b>Build something</b>
+<p>Turn an idea into a working project.</p></button>
+<button class="example" data-example="research">
+<span class="example-icon">
+<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+<circle cx="10" cy="10" r="6"/>
+<path d="m15 15 6 6M7 10h6m-3-3v6"/></svg></span>
+<b>Research a topic</b>
+<p>Gather insights and put them together.</p></button>
+<button class="example" data-example="write">
+<span class="example-icon">
+<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+<path d="M12 4H5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2v-7M16 3l5 5-9 9-6 1 1-6Z"/></svg></span>
+<b>Write a document</b>
+<p>From a rough idea to a polished draft.</p></button></div>
+<div class="section-heading">
+<h2>Recent tasks</h2>
+<button class="text-button" data-view="tasks">View all →</button></div>
+<div id="recent-tasks" class="recent-list">
+<div class="empty">Loading your tasks…</div></div>
+<div class="onboarding">
+<span>
+<i>1</i> Describe your goal</span>
+<span>
+<i>2</i> Review the plan</span>
+<span>
+<i>3</i> Let your team work</span>
+<span>
+<i>4</i> Make it yours</span></div></div></section>
+<section class="view" id="view-tasks" hidden>
+<div class="page-heading">
+<div>
+<h1>All tasks</h1>
+<p class="subtitle">Pick up where you left off. Your plans, progress, and results stay together.</p></div></div>
+<label class="screen-reader" for="task-search">Search tasks</label>
+<input id="task-search" class="search" type="search" placeholder="Search your tasks…">
+<div id="all-tasks" class="recent-list"></div></section>
+<section class="view" id="view-task" hidden>
+<div class="page-heading">
+<div>
+<div class="eyebrow">YOUR TASK</div>
+<h1 class="task-title" id="task-title">Task details</h1>
+<p class="subtitle" id="task-subtitle"></p></div>
+<button id="btn-refresh" class="text-button">Refresh</button></div>
+<div class="task-toolbar">
+<button id="btn-run" class="primary" disabled>Start task</button>
+<button id="btn-resume" class="primary" disabled>Continue task</button>
+<button id="btn-stop" class="danger" disabled>Stop task</button>
+<button id="btn-rerun" disabled>Start again</button>
+<button id="btn-delete-task" class="danger" disabled>Delete task</button></div>
+<nav class="tabs" aria-label="Task sections">
+<button class="active" data-tab="plan" aria-current="page">Plan &amp; progress</button>
+<button data-tab="results">Results &amp; files</button>
+<button data-tab="activity">Activity</button></nav>
+<div id="tab-plan">
+<div class="panel" id="conversation-panel" aria-live="polite">
+<h2>Conversation</h2>
+<div id="conversation-messages"></div>
+<div class="row" style="margin-top:12px">
+<input id="chat-next-task" class="grow" aria-label="Ask for a new task" placeholder="Ask me to do a new task…">
+<button class="primary" id="chat-next-send">New task</button></div>
+</div>
+<div id="attention-link" class="notice" hidden>
+<span>This task needs a connection before it can start.</span>
+<button data-view="connections">Review setup →</button></div>
+<div class="panel" id="ask-panel" hidden>
+<h2>Task chat</h2>
+<p class="chat-intro">Your orchestrator pauses here when it needs a fact, connection, or approval. Answer once and it continues the same task.</p>
+<div id="chat-receipts"></div>
+<div id="task-setup-chat"></div>
+<div id="ask"></div>
+    </div>
+<div class="overview-grid">
+<div>
+<div class="panel guide" id="guide-panel">
+<h2>What happens next</h2>
+<div class="guide-title" id="guide-title">Describe what you want completed</div>
+<div class="guide-copy" id="guide-copy">The AI will ask only for missing facts, build a workflow, choose agents and show what tools it needs.</div>
+<div class="progress-track">
+<div class="progress-fill" id="progress-fill"></div></div>
+<div class="progress-note" id="progress-note">No workflow selected</div>
+    </div>
+<div class="panel">
+<h2>The plan <span class="pill" id="graph-note"></span></h2>
+<div id="plan-list"></div>
+<details class="advanced">
+<summary>View dependency graph</summary>
+<div id="graph"></div>
+<p class="hint">Select a step to review its details.</p></details></div></div>
+<div>
+<div class="panel">
+<h2>Your AI team</h2>
+<div id="specialists"></div></div>
+<div class="panel">
+<h2>Ready to start?</h2>
+<div id="readiness"></div>
+<details class="advanced">
+<summary>Tools and requirements</summary>
+<table id="requirements"></table></details></div></div></div></div>
+<div id="tab-results" hidden>
+<div class="panel">
+<h2>Work from your agents <button id="btn-add-step" style="float:right;font-size:11px;padding:5px 9px">+ Add step</button></h2>
+<p class="hint">Open a step to read its output or adjust a requirement.</p>
+<div id="new-step" hidden></div>
+<div id="steps"></div></div>
+<div class="panel">
+<h2>Files created by agents</h2>
+<div id="workspace-files">
+<div class="empty">No files yet.</div></div>
+<div id="artifact-viewer" class="artifact-viewer" hidden>
+<div class="artifact-viewer-head">
+<div>
+<div class="eyebrow">Artifact viewer</div>
+<h3 id="artifact-title">Artifact</h3>
+<div id="artifact-location" class="artifact-location"></div>
+</div>
+<div class="row">
+<button id="artifact-download">Download</button>
+<button id="artifact-close">Close</button>
+</div></div>
+<pre id="artifact-content"></pre>
+<iframe id="artifact-frame" title="PDF artifact preview" hidden></iframe>
+</div>
+    </div>
+<div class="panel">
+<h2>Download task report</h2>
+<p class="hint">Save a readable report or export the data for your own tools.</p>
+<div class="row">
+<button data-fmt="html">HTML report</button>
+<button data-fmt="pdf">PDF report</button>
+<button data-fmt="json">JSON data</button>
+<button data-fmt="csv">CSV spreadsheet</button></div></div></div>
+<div id="tab-activity" hidden>
+<div class="panel">
+<h2>Metrics</h2>
+<div class="tiles" id="tiles">
+<div class="empty">-</div></div>
+    </div>
+<div class="panel">
+<h2>Live log</h2>
+<div class="log" id="log"></div>
+    </div>
+<details class="advanced">
+<summary>Agent handoffs and execution queue</summary>
+<div class="panel">
+<h2>Agent handoffs</h2>
+<div id="agent-messages">
+<div class="empty">No direct handoffs yet.</div></div>
+    </div>
+<div class="panel">
+<h2>Execution queue</h2>
+<div id="jobs">
+<div class="empty">No execution jobs yet.</div></div>
+    </div></details></div></section>
+<section class="view" id="view-connections" hidden>
+<div class="page-heading">
+<div>
+<h1>Connections</h1>
+<p class="subtitle">Choose your AI model and connect the tools your tasks need.</p></div></div>
+<div class="panel">
+<h2>AI model</h2>
+<p class="desc" id="provider-description">Checking your model configuration…</p>
+<p class="hint">Model credentials are managed below. Configured models are ready to use.</p></div>
+<div class="panel" id="setup-panel" hidden>
+<h2>Let's get you set up</h2>
+<div id="setup"></div>
+    </div>
+<div class="panel">
+<h2>Available tools</h2>
+<p class="hint" id="tools-context">Select a task to inspect its tools and connection status.</p>
+<div style="overflow:auto">
+<table id="tools"></table></div></div></section>
+<section class="view" id="view-automation" hidden>
+<div class="page-heading">
+<div>
+<h1>Automations</h1>
+<p class="subtitle">Save useful workflows and choose when they run.</p></div></div>
+<div class="notice" id="automation-notice">
+<span>Select a task from All tasks to schedule it or create a trigger.</span>
+<button data-view="tasks">Choose task →</button></div>
+<div class="panel">
+<h2>Reusable workflows</h2>
+<div class="row">
+<input id="template-name" placeholder="Template name">
+<button id="btn-save-template">Save current</button>
+      </div>
+<div id="templates" style="margin-top:.6rem">
+<div class="empty">No templates.</div></div>
+    </div>
+<div id="task-automations" hidden>
+<p class="hint" id="automation-task-name"></p>
+<div class="settings-grid">
+<div class="panel">
+<h2>Run automatically</h2>
+<p class="hint" style="margin-bottom:.55rem">Repeat this workflow at a fixed interval. Scheduled runs start fresh and never overlap.</p>
+<div class="row">
+<input id="schedule-minutes" type="number" min="1" value="60" style="width:90px">
+<span class="desc">minutes</span>
+<button id="btn-schedule" class="primary">Add schedule</button>
+      </div>
+<div id="schedules" style="margin-top:.6rem">
+<div class="empty">No schedule.</div></div>
+    </div>
+<div class="panel">
+<h2>Start from another app</h2>
+<p class="hint" style="margin-bottom:.55rem">Create a webhook, then POST JSON to its URL from a form, service, or another workflow.</p>
+<div class="row">
+<input id="webhook-name" value="Incoming event" placeholder="Trigger name">
+<button id="btn-webhook" class="primary">Create webhook</button>
+      </div>
+<div id="new-webhook-url"></div>
+<div id="webhooks" style="margin-top:.6rem">
+<div class="empty">No webhooks.</div></div>
+    </div></div></div></section>
+<section class="view" id="view-settings" hidden>
+<div class="page-heading">
+<div>
+<h1>Workspace settings</h1>
+<p class="subtitle">Manage workspace access and review administrative activity.</p></div></div>
+<div class="panel">
+<h2>Workspace access</h2>
+<p class="desc" id="identity">Checking workspace access…</p>
+<button id="btn-login">Sign in</button></div>
+<div class="panel">
+<h2>Access &amp; audit <span id="current-role" class="badge muted">local</span></h2>
+<div id="audit">
+<div class="empty">Audit data is available to administrators.</div></div>
+    </div>
+<details class="advanced">
+<summary>Troubleshooting tools</summary>
+<p class="hint">To simulate tool failures, open a task, then use the tool controls in Connections.</p></details></section>
+<select id="run-picker" hidden aria-label="Selected task"></select>
+</main></div>
 <dialog id="login-dialog">
-  <h2 style="margin-top:0">Sign in to your workspace</h2>
-  <p class="desc">Enter the access key supplied by your administrator, or use your organization’s single sign-on.</p>
-  <label for="login-key">Access key</label>
-  <input id="login-key" type="password" autocomplete="current-password" style="margin:.35rem 0 .8rem">
-  <div class="row">
-    <button class="primary" id="login-key-submit">Continue</button>
-    <button id="login-sso">Organization SSO</button>
-    <button id="login-cancel">Cancel</button>
+<h2 style="margin-top:0">Sign in to your workspace</h2>
+<p class="desc">Enter the access key supplied by your administrator, or use your organization’s single sign-on.</p>
+<label for="login-key">Access key</label>
+<input id="login-key" type="password" autocomplete="current-password" style="margin:.35rem 0 .8rem">
+<div class="row">
+<button class="primary" id="login-key-submit">Continue</button>
+<button id="login-sso">Organization SSO</button>
+<button id="login-cancel">Cancel</button>
   </div>
-  <p class="ask-err" id="login-error"></p>
+<p class="ask-err" id="login-error"></p>
 </dialog>
-
-<main>
-  <section>
-    <div class="panel">
-      <h2>1 · Tell us what you want done</h2>
-      <textarea id="desc" aria-label="Task description" placeholder="Example: Build and test a task management website with login and a Kanban board."></textarea>
-      <div class="row" style="margin-top:.6rem">
-        <button class="primary" id="btn-plan">Create a plan</button>
-        <button id="btn-run" disabled>Start the work</button>
-        <button id="btn-rerun" disabled>Run from beginning</button>
-        <button id="btn-resume" disabled>Resume</button>
-        <button id="btn-stop" class="danger" disabled>Stop run</button>
-        <label class="row" style="gap:.3rem"><input type="checkbox" id="opt-parallel" checked style="width:auto"> Run independent steps together</label>
-        <label class="row" style="gap:.3rem"><input type="checkbox" id="opt-smart" checked style="width:auto"> Keep work that is still valid</label>
-      </div>
-      <p class="hint" id="plan-hint">Planning uses the configured LLM; with no API key it falls back to a deterministic offline planner.</p>
-    </div>
-
-    <div class="panel guide" id="guide-panel">
-      <h2>What happens next</h2>
-      <div class="guide-title" id="guide-title">Describe what you want completed</div>
-      <div class="guide-copy" id="guide-copy">The AI will ask only for missing facts, build a workflow, choose agents and show what tools it needs.</div>
-      <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
-      <div class="progress-note" id="progress-note">No workflow selected</div>
-    </div>
-
-    <div class="panel" id="clarify-panel" hidden>
-      <h2>A few questions first</h2>
-      <div id="clarify"></div>
-    </div>
-
-    <div class="panel">
-      <h2>2 · The plan <span id="graph-note" class="pill"></span></h2>
-      <div id="graph"><div class="empty">No workflow loaded.</div></div>
-      <p class="hint">Click a node to change that step and watch which downstream steps re-run.</p>
-    </div>
-
-    <div class="panel">
-      <h2>3 · Agent work and results
-        <button id="btn-add-step" style="float:right;font-size:.72rem;padding:.2rem .5rem">
-          + Add step</button></h2>
-      <div id="new-step" hidden></div>
-      <div id="steps"><div class="empty">No workflow loaded.</div></div>
-    </div>
-  </section>
-
-  <aside>
-    <div class="panel" id="setup-panel" hidden>
-      <h2>Let's get you set up</h2>
-      <div id="setup"></div>
-    </div>
-
-    <div class="panel" id="ask-panel" hidden>
-      <h2>The workflow needs you</h2>
-      <div id="ask"></div>
-    </div>
-
-    <div class="panel">
-      <h2>What this task needs</h2>
-      <div id="readiness"></div>
-      <div id="specialists"></div>
-      <table id="requirements"><tbody><tr><td class="empty">-</td></tr></tbody></table>
-    </div>
-
-    <div class="panel">
-      <h2>Metrics</h2>
-      <div class="tiles" id="tiles"><div class="empty">-</div></div>
-    </div>
-
-    <details class="advanced">
-      <summary>Administration and tool settings</summary>
-    <div class="panel">
-      <h2>Access &amp; audit <span id="current-role" class="badge muted">local</span></h2>
-      <div id="audit"><div class="empty">Audit data is available to administrators.</div></div>
-    </div>
-
-    <div class="panel">
-      <h2>Tools</h2>
-      <table id="tools"><tbody><tr><td class="empty">-</td></tr></tbody></table>
-      <p class="hint">Break a tool to force the fallback chain, then re-run.</p>
-    </div>
-    </details>
-
-    <div class="panel">
-      <h2>Files created by agents</h2>
-      <div id="workspace-files"><div class="empty">No files yet.</div></div>
-    </div>
-
-    <details class="advanced">
-      <summary>Automation and technical details</summary>
-    <div class="panel">
-      <h2>Reusable workflows</h2>
-      <div class="row">
-        <input id="template-name" placeholder="Template name">
-        <button id="btn-save-template">Save current</button>
-      </div>
-      <div id="templates" style="margin-top:.6rem"><div class="empty">No templates.</div></div>
-    </div>
-
-    <div class="panel">
-      <h2>Run automatically</h2>
-      <p class="hint" style="margin-bottom:.55rem">Repeat this workflow at a fixed interval. Scheduled runs start fresh and never overlap.</p>
-      <div class="row">
-        <input id="schedule-minutes" type="number" min="1" value="60" style="width:90px">
-        <span class="desc">minutes</span>
-        <button id="btn-schedule" class="primary">Add schedule</button>
-      </div>
-      <div id="schedules" style="margin-top:.6rem"><div class="empty">No schedule.</div></div>
-    </div>
-
-    <div class="panel">
-      <h2>Start from another app</h2>
-      <p class="hint" style="margin-bottom:.55rem">Create a webhook, then POST JSON to its URL from a form, service, or another workflow.</p>
-      <div class="row">
-        <input id="webhook-name" value="Incoming event" placeholder="Trigger name">
-        <button id="btn-webhook" class="primary">Create webhook</button>
-      </div>
-      <div id="new-webhook-url"></div>
-      <div id="webhooks" style="margin-top:.6rem"><div class="empty">No webhooks.</div></div>
-    </div>
-
-    <div class="panel">
-      <h2>Live log</h2>
-      <div class="log" id="log"></div>
-    </div>
-
-    <div class="panel">
-      <h2>Agent handoffs</h2>
-      <div id="agent-messages"><div class="empty">No direct handoffs yet.</div></div>
-    </div>
-
-    <div class="panel">
-      <h2>Execution queue</h2>
-      <div id="jobs"><div class="empty">No execution jobs yet.</div></div>
-    </div>
-    </details>
-
-    <div class="panel">
-      <h2>Export</h2>
-      <div class="row">
-        <button data-fmt="json">JSON</button>
-        <button data-fmt="csv">CSV</button>
-        <button data-fmt="html">HTML report</button>
-      </div>
-    </div>
-  </aside>
-</main>
-
+<dialog id="change-requirement-dialog" aria-labelledby="change-requirement-title">
+<form id="change-requirement-form">
+  <h2 id="change-requirement-title" style="margin-top:0">Change requirement</h2>
+  <p class="desc">Tell the agent what should be different. This step and every dependent step will be updated; unaffected work is kept.</p>
+  <div class="ask-field">
+    <label>Current step</label>
+    <div class="what" id="change-requirement-current"></div>
+  </div>
+  <div class="ask-field">
+    <label for="change-requirement-input">What needs to change?</label>
+    <textarea id="change-requirement-input" rows="4"
+      placeholder="For example: Use PostgreSQL instead of MongoDB" required></textarea>
+  </div>
+  <p class="ask-err" id="change-requirement-error" aria-live="polite"></p>
+  <div class="row">
+    <button class="primary" id="change-requirement-submit" type="submit">Apply change &amp; re-run</button>
+    <button id="change-requirement-cancel" type="button">Cancel</button>
+  </div>
+</form>
+</dialog>
+<dialog id="confirmation-dialog" aria-labelledby="confirmation-title">
+  <h2 id="confirmation-title" style="margin-top:0">Confirm action</h2>
+  <p class="desc" id="confirmation-message" style="white-space:pre-wrap"></p>
+  <pre id="confirmation-details" hidden></pre>
+  <div class="row">
+    <button class="primary" id="confirmation-accept" type="button">Continue</button>
+    <button id="confirmation-cancel" type="button">Cancel</button>
+  </div>
+</dialog>
+<div id="toast" role="alert" hidden>
+<span id="toast-message"></span>
+<button id="toast-close" aria-label="Dismiss notification">×</button></div>
 <script>
 "use strict";
 
@@ -368,10 +1683,40 @@ let snapshot = null;
 let apiKey = sessionStorage.getItem("orchestrator_api_key") || "";
 let currentRole = "admin";
 let loginWaiter = null;
+let confirmationWaiter = null;
 
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+
+// A step's raw output is written for the orchestrator, not for a person: the
+// agent's prose, then a TOOL_DIRECTIVE line, then the tool's own transcript.
+// Showing it verbatim buries the thing the user actually asked for -- ask for
+// a page heading and you get a wall of Playwright JSON with "Example Domain"
+// somewhere inside. Split it so the answer leads and the plumbing folds away.
+function readableOutput(text) {
+  const raw = String(text ?? "");
+  if (!raw.trim()) return { answer: "", detail: "" };
+
+  // Anything the agent said before the directive is its actual answer.
+  const prose = raw.split(/^TOOL_DIRECTIVE:/m)[0].trim();
+
+  let toolPart = "";
+  const tool = raw.match(/\n---\nTool `[^`]+`:\s*([\s\S]*)$/);
+  if (tool) {
+    toolPart = tool[1].trim();
+    // MCP transcripts put the value under "### Result"; the rest is the code
+    // it ran and a snapshot path, which nobody reads unless debugging. A
+    // navigation has no result, so fall back to "### Page", where the URL and
+    // title are the only things worth reporting.
+    const section = toolPart.match(/###\s*Result\s*\n([\s\S]*?)(?=\n###|\n```|$)/)
+                 || toolPart.match(/###\s*Page\s*\n([\s\S]*?)(?=\n###|\n```|$)/);
+    if (section) toolPart = section[1].trim();
+  }
+
+  const answer = [prose, toolPart].filter(Boolean).join("\n\n").trim();
+  return { answer: answer || raw, detail: raw };
+}
 
 async function api(path, options = {}, retryAuth = true) {
   const { headers: extraHeaders = {}, ...requestOptions } = options;
@@ -412,7 +1757,7 @@ function requestLogin() {
 async function refreshIdentity() {
   try {
     const me = await api("/api/auth/me", {}, false);
-    $("#identity").textContent = `${me.subject} · ${me.organization} · ${me.role}`;
+    $("#identity").textContent = me.subject === "local" ? "Private local workspace. No sign-in needed." : `${me.subject} · ${me.organization} · ${me.role}`;
     $("#btn-login").textContent = "Sign out";
   } catch (_) {
     $("#identity").textContent = "not signed in";
@@ -461,6 +1806,7 @@ async function refreshAudit() {
 }
 
 function log(message, kind = "") {
+  if (kind === "var(--failed)") notifyError(message);
   const box = $("#log");
   const line = document.createElement("div");
   const time = new Date().toLocaleTimeString();
@@ -508,12 +1854,12 @@ function renderGraph(state) {
     const status = step.result.status;
     const colour = STATUS_COLOURS[status] || "var(--pending)";
     const tool = step.result.tool_used || step.requires_tool;
-    const sub = `${status}${tool ? " · " + tool : ""} · ${step.result.duration_s.toFixed(2)}s`;
+    const sub = `${STATUS_LABELS[status] || status}${tool ? " · " + tool : ""} · ${step.result.duration_s.toFixed(2)}s`;
     nodes.push(`<g class="node" data-step="${esc(step.id)}">
       <rect x="${pos.x}" y="${pos.y}" width="${BW}" height="${BH}" rx="8"
-            fill="#1b1f2a" stroke="${colour}" stroke-width="2.5"/>
-      <text x="${pos.x + 12}" y="${pos.y + 22}" fill="#e8ecf4" font-size="13"
-            font-family="ui-monospace,monospace">${esc(step.id.slice(0, 20))}</text>
+            fill="#ffffff" stroke="${colour}" stroke-width="2.5"/>
+      <text x="${pos.x + 12}" y="${pos.y + 22}" fill="#273c36" font-size="13"
+            font-family="Segoe UI,sans-serif">${esc(friendly(step.id).slice(0, 23))}</text>
       <text x="${pos.x + 12}" y="${pos.y + 41}" fill="${colour}" font-size="11">${esc(sub)}</text>
       ${step.result.used_fallback ? `<circle cx="${pos.x + BW - 14}" cy="${pos.y + 14}" r="5" fill="var(--paused)"/>` : ""}
     </g>`);
@@ -526,18 +1872,20 @@ function renderGraph(state) {
     ${edges.join("")}${nodes.join("")}</svg>`;
 
   host.querySelectorAll(".node").forEach((node) => {
-    node.addEventListener("click", () => promptChange(node.dataset.step));
+    node.addEventListener("click", () => { setTaskTab("results"); document.getElementById(`editor-${node.dataset.step}`).closest("details").open = true; document.getElementById(`editor-${node.dataset.step}`).scrollIntoView({block:"center"}); });
   });
   $("#graph-note").textContent = `${state.steps.length} steps · ${levels.length} levels`;
 }
 
 function renderSteps(state) {
+  if ($("#steps").querySelector("[id^=editor-] input, [id^=editor-] textarea")) return;
+  const opened = [...$("#steps").querySelectorAll("details[open]")].map(el => el.querySelector("[data-edit]")?.dataset.edit);
   $("#steps").innerHTML = state.steps.map((step) => {
     const r = step.result;
     const colour = STATUS_COLOURS[r.status] || "var(--pending)";
     const badges = [
       `<span class="badge" style="background:${colour}">${esc(STATUS_LABELS[r.status] || r.status)}</span>`,
-      `<span class="badge muted">${esc(step.agent_role)}</span>`,
+      `<span class="badge muted">${esc(friendly(step.agent_role))}</span>`,
     ];
     if (step.requires_tool) {
       const label = esc(r.tool_used || step.requires_tool);
@@ -547,10 +1895,10 @@ function renderSteps(state) {
     }
     const approve = r.status === "paused"
       ? `<button data-approve="${esc(step.id)}">Approve</button>` : "";
-    return `<details class="step"${r.status === "failed" ? " open" : ""}>
-      <summary><b>${esc(step.id)}</b>${badges.join("")}
+    return `<details class="step"${r.status === "failed" || opened.includes(step.id) ? " open" : ""}>
+      <summary><b>${esc(friendly(step.id))}</b>${badges.join("")}
         <span class="meta">${r.duration_s.toFixed(2)}s · ${r.usage.total_tokens} tok ·
-          deps: ${esc((step.depends_on || []).join(", ") || "-")}</span></summary>
+          follows: ${esc((step.depends_on || []).map(friendly).join(", ") || "no earlier step")}</span></summary>
       <div class="body">
         <p class="desc">${esc(step.description)}</p>
         <div class="row" style="margin-top:.4rem">
@@ -561,7 +1909,16 @@ function renderSteps(state) {
           ${approve}
         </div>
         <div id="editor-${esc(step.id)}"></div>
-        <pre>${esc(r.error || r.output || "(no output yet)")}</pre>
+        ${(() => {
+          if (r.error) return `<pre>${esc(r.error)}</pre>`;
+          const { answer, detail } = readableOutput(r.output);
+          if (!answer) return `<pre>(no output yet)</pre>`;
+          const plumbing = detail && detail.trim() !== answer.trim()
+            ? `<details class="raw"><summary>Full tool transcript</summary>
+                 <pre>${esc(detail)}</pre></details>`
+            : "";
+          return `<pre>${esc(answer)}</pre>${plumbing}`;
+        })()}
       </div></details>`;
   }).join("");
 
@@ -570,7 +1927,7 @@ function renderSteps(state) {
   $("#steps").querySelectorAll("[data-delete]").forEach((b) =>
     b.addEventListener("click", () => deleteStep(b.dataset.delete)));
   $("#steps").querySelectorAll("[data-change]").forEach((b) =>
-    b.addEventListener("click", () => promptChange(b.dataset.change)));
+    b.addEventListener("click", () => openRequirementChange(b.dataset.change)));
   $("#steps").querySelectorAll("[data-pause]").forEach((b) =>
     b.addEventListener("click", () => act(`/api/runs/${runId}/steps/${b.dataset.pause}/pause`)));
   $("#steps").querySelectorAll("[data-approve]").forEach((b) =>
@@ -582,14 +1939,14 @@ function renderSteps(state) {
 
 function renderGuide(state) {
   const steps = state.steps || [];
-  const complete = steps.filter(s => ["done", "skipped"].includes(s.result.status)).length;
+  const complete = steps.filter(s => ["done", "skipped", "not_applicable"].includes(s.result.status)).length;
   const failed = steps.filter(s => s.result.status === "failed").length;
   const inputs = Object.keys(state.pending_inputs || {}).length;
   const actions = Object.keys(state.pending_actions || {}).length;
   const blockers = state.requirements?.blockers?.length || 0;
   const percent = steps.length ? Math.round(complete * 100 / steps.length) : 0;
   let title = "Workflow ready to start";
-  let copy = "Review the planned agents and steps, then select Run workflow.";
+  let copy = "Review the steps below, then select Start task when you’re ready.";
 
   if (state.busy) {
     title = "Your agents are working";
@@ -599,16 +1956,16 @@ function renderGuide(state) {
     copy = "The workflow needs information only you can provide before it can continue.";
   } else if (actions) {
     title = "Review the action before it happens";
-    copy = "Check the exact action in the orange panel, then approve or reject it.";
+    copy = "Check the action above, then approve or reject it.";
   } else if (blockers) {
     title = "Connect the missing requirement";
-    copy = "Follow the setup instructions on the right. The workflow will be ready afterwards.";
+    copy = "Open Connections to finish setup, then return to start this task.";
   } else if (failed) {
     title = `${failed} step${failed === 1 ? "" : "s"} need attention`;
     copy = "Open the failed step to see the reason, edit it if needed, then resume.";
   } else if (steps.length && complete === steps.length) {
     title = "Workflow completed";
-    copy = "Review the results and download files created by the agents from the right panel.";
+    copy = "Open Results & files to review the work and download your deliverables.";
   }
   $("#guide-title").textContent = title;
   $("#guide-copy").textContent = copy;
@@ -635,7 +1992,8 @@ function renderTools(state) {
   $("#tools").innerHTML = `<tbody>${state.tools.map((t) => `
     <tr>
       <td><b>${esc(t.name)}</b><br><span style="color:var(--muted);font-size:.7rem">
-        ${esc(t.capability)} · ${t.live ? "live" : "simulated"}</span></td>
+        ${esc(t.capability)} · ${esc(t.status || (t.live ? "live" : "unavailable"))}</span>
+        ${t.detail ? `<br><span style="color:var(--muted);font-size:.65rem">${esc(t.detail)}</span>` : ""}</td>
       <td style="color:${t.broken ? "var(--failed)" : "var(--muted)"}">
         ${t.broken ? "broken" : "ok"}</td>
       <td style="text-align:right">
@@ -651,25 +2009,101 @@ function renderTools(state) {
 function renderFiles(state) {
   const files = state.workspace_files || [];
   const host = $("#workspace-files");
+  const viewer = $("#artifact-viewer");
   if (!files.length) {
     host.innerHTML = '<div class="empty">No files yet.</div>';
+    viewer.hidden = true;
     return;
   }
-  host.innerHTML = files.map((file) => `<div class="row" style="margin:.35rem 0">
-    <button data-file="${esc(file.path)}">Download</button>
-    <span style="font-family:ui-monospace,monospace;font-size:.75rem">${esc(file.path)}</span>
+  const previewFile = /\.(?:md|txt|json|csv|html?|ya?ml|log|py|js|ts|tsx|jsx|css|sql|pdf)$/i;
+  host.innerHTML = files.map((file) => `<div class="row artifact-file">
+    ${previewFile.test(file.path) ? `<button data-preview-file="${esc(file.path)}">View</button>` : ""}
+    <button data-download-file="${esc(file.path)}">Download</button>
+    <span class="artifact-path">Stored at workspace/${esc(runId)}/${esc(file.path)}</span>
     <span class="meta">${file.size.toLocaleString()} bytes</span>
   </div>`).join("");
-  host.querySelectorAll("[data-file]").forEach((button) =>
-    button.addEventListener("click", () => downloadWorkspaceFile(button.dataset.file)));
+  host.querySelectorAll("[data-preview-file]").forEach((button) =>
+    button.addEventListener("click", () => viewWorkspaceFile(button.dataset.previewFile)));
+  host.querySelectorAll("[data-download-file]").forEach((button) =>
+    button.addEventListener("click", () => downloadWorkspaceFile(button.dataset.downloadFile)));
+  if (!files.some(file => file.path === viewer.dataset.path)) viewer.hidden = true;
 }
 
-async function downloadWorkspaceFile(path) {
+function requestConfirmation({ title = "Confirm action", message = "", details = "",
+                               acceptLabel = "Continue", danger = false } = {}) {
+  if (confirmationWaiter) return Promise.resolve(false);
+  const dialog = $("#confirmation-dialog");
+  $("#confirmation-title").textContent = title;
+  $("#confirmation-message").textContent = message;
+  const detailBox = $("#confirmation-details");
+  detailBox.textContent = details;
+  detailBox.hidden = !details;
+  const accept = $("#confirmation-accept");
+  accept.textContent = acceptLabel;
+  accept.className = danger ? "danger" : "primary";
+  dialog.showModal();
+  accept.focus();
+  confirmationWaiter = new Promise((resolve) => { dialog._resolveConfirmation = resolve; });
+  return confirmationWaiter.finally(() => { confirmationWaiter = null; });
+}
+
+function finishConfirmation(accepted) {
+  const dialog = $("#confirmation-dialog");
+  dialog.close();
+  dialog._resolveConfirmation?.(accepted);
+  dialog._resolveConfirmation = null;
+}
+
+async function fetchWorkspaceFile(path, fileRunId = runId) {
+  const response = await fetch(`/api/runs/${fileRunId}/files/${encodeURIComponent(path)}`, {
+    headers: apiKey ? { "Authorization": `Bearer ${apiKey}` } : {},
+  });
+  if (!response.ok) {
+    let message = response.statusText;
+    try { message = (await response.json()).detail || message; } catch (_) {}
+    throw new Error(message);
+  }
+  return response;
+}
+
+let artifactPreviewUrl = null;
+function clearArtifactPreview() {
+  if (artifactPreviewUrl) URL.revokeObjectURL(artifactPreviewUrl);
+  artifactPreviewUrl = null;
+  const frame = $("#artifact-frame");
+  frame.removeAttribute("src");
+  frame.hidden = true;
+  $("#artifact-content").hidden = false;
+}
+
+async function viewWorkspaceFile(path, fileRunId = runId) {
   try {
-    const response = await fetch(`/api/runs/${runId}/files/${encodeURIComponent(path)}`, {
-      headers: apiKey ? { "Authorization": `Bearer ${apiKey}` } : {},
-    });
-    if (!response.ok) throw new Error((await response.json()).detail || response.statusText);
+    const response = await fetchWorkspaceFile(path, fileRunId);
+    const viewer = $("#artifact-viewer");
+    clearArtifactPreview();
+    $("#artifact-title").textContent = path.split("/").pop();
+    $("#artifact-location").textContent = `Stored at workspace/${fileRunId}/${path}`;
+    if (/\.pdf$/i.test(path)) {
+      artifactPreviewUrl = URL.createObjectURL(await response.blob());
+      $("#artifact-content").hidden = true;
+      $("#artifact-frame").src = artifactPreviewUrl;
+      $("#artifact-frame").hidden = false;
+    } else {
+      $("#artifact-content").textContent = await response.text();
+    }
+    $("#artifact-download").dataset.path = path;
+    $("#artifact-download").dataset.runId = fileRunId;
+    viewer.dataset.path = path;
+    viewer.hidden = false;
+    viewer.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } catch (err) {
+    log("file preview failed: " + err.message, "var(--failed)");
+  }
+}
+
+async function downloadWorkspaceFile(path, fileRunId = runId) {
+  try {
+    const response = await fetchWorkspaceFile(path, fileRunId);
     const blob = await response.blob();
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -813,14 +2247,13 @@ function renderRequirements(state) {
     text = `Blocked — ${req.blockers.length} requirement(s) missing: ${req.blockers.join(", ")}`;
   } else if (req.degraded.length) {
     cls = "warn";
-    text = `Ready, with ${req.degraded.length} capability(ies) degraded — those steps ` +
-           `still run, but their tool output is simulated.`;
+    text = `You can start. ${req.degraded.length} tool connection(s) use a backup or demo mode. Check the tool details before relying on the result.`;
   }
   $("#readiness").innerHTML = `<div class="verdict ${cls}">${esc(text)}</div>`;
 
   $("#specialists").innerHTML = req.agents.length
     ? `<div style="margin-bottom:.5rem">${req.agents.map(a =>
-        `<div class="spec"><b>${esc(a.role)}</b>${a.why ? " — " + esc(a.why) : ""}</div>`
+        `<div class="spec"><b>${esc(friendly(a.role))}</b>${a.why ? " — " + esc(a.why) : ""}</div>`
       ).join("")}</div>`
     : "";
 
@@ -841,6 +2274,171 @@ function renderRequirements(state) {
 // --- guided setup: explain what's missing and how to get it ---------------
 
 let setupSignature = null;
+let taskSetupSignature = null;
+let chatReceipts = [];
+let chatTurns = [];
+let pendingChatTurn = null;
+
+function chatOutcome(state) {
+  const steps = state.steps || [];
+  const finished = steps.filter(s => ["done", "skipped", "not_applicable"].includes(s.result?.status));
+  const failures = steps.filter(s => s.result?.status === "failed" || s.result?.error);
+  const waiting = Object.keys(state.pending_inputs || {}).length + Object.keys(state.pending_actions || {}).length;
+  const files = (state.workspace_files || []).filter(f => !f.path.endsWith(".log.jsonl"));
+  const requestedAction = /\b(open|launch|draw|type|click|save|create|write|build|make|edit|run|scrape)\b/i.test(state.description || "")
+    && /\b(paint|notepad|vscode|browser|website|web app)\b|https?:\/\/|\.[a-z0-9]{2,5}\b/i.test(state.description || "");
+  const usedActionTool = steps.some(s => s.result?.tool_used || s.requires_tool);
+  const asksPictureLocation = /\b(pic|picture|image|drawing)\b/i.test(state.description || "")
+    && /\b(location|path|where)\b/i.test(state.description || "");
+  let reply;
+  if (state.busy) reply = `I’m working on it. ${finished.length} of ${steps.length} steps finished.`;
+  else if (requestedAction && !usedActionTool) reply = "I did not complete this task. The plan used no app or file tool, so the ‘done’ steps were only text.";
+  else if (asksPictureLocation && !files.some(f => /\.(png|jpg|jpeg|bmp|gif|webp)$/i.test(f.path))) reply = "I cannot give a picture location because this task did not save a picture.";
+  else if (waiting) reply = "I need your answer or approval to continue. Open task details below.";
+  else if (state.requirements?.can_run === false) reply = "I need a connection or tool before I can start. Open task details below.";
+  else if (failures.length) reply = `I could not finish: ${failures.map(s => friendly(s.id)).join(", ")}. ${failures[0].result.error || "See the task details."}`;
+  else if (steps.length && finished.length === steps.length) reply = `Done. I finished ${finished.length} step${finished.length === 1 ? "" : "s"}.`;
+  else reply = "I’ve planned your task and am starting it.";
+  return { reply, files };
+}
+
+function renderChatThread() {
+  const host = $("#chat-thread");
+  $("#view-home").classList.toggle("has-chat", chatTurns.length > 0);
+  if (!chatTurns.length) {
+    host.innerHTML = '<div class="chat-message agent"><span class="chat-avatar">AI</span><div class="chat-bubble">Hi. Tell me what you want done, and I’ll work on it here.</div></div>';
+    return;
+  }
+  host.innerHTML = chatTurns.map(turn => {
+    const outcome = turn.state ? chatOutcome(turn.state) : { reply: turn.reply || "I’m thinking…", files: [] };
+    const files = outcome.files.map(f => `<button type="button" data-chat-run="${esc(turn.runId)}" data-chat-file="${esc(f.path)}">Open ${esc(f.path)}</button>`).join("");
+    const detail = turn.runId ? `<button type="button" data-chat-detail="${esc(turn.runId)}">Task details</button>` : "";
+    return `<div class="chat-message user"><span class="chat-avatar">YOU</span><div class="chat-bubble">${esc(turn.prompt)}</div></div>
+      <div class="chat-message agent"><span class="chat-avatar">AI</span><div class="chat-bubble">${esc(outcome.reply)}${files ? `<p>Saved in workspace/${esc(turn.runId)}/</p><p>${files}</p>` : ""}${detail ? `<p>${detail}</p>` : ""}</div></div>`;
+  }).join("");
+  host.querySelectorAll("[data-chat-file]").forEach(button => button.addEventListener("click", async () => {
+    try {
+      await selectRun(button.dataset.chatRun);
+      setTaskTab("results");
+      await viewWorkspaceFile(button.dataset.chatFile, button.dataset.chatRun);
+    } catch (err) { notifyError(err.message); }
+  }));
+  host.querySelectorAll("[data-chat-detail]").forEach(button => button.addEventListener("click", () =>
+    selectRun(button.dataset.chatDetail).catch(err => notifyError(err.message))));
+  host.scrollTop = host.scrollHeight;
+}
+
+function updateChatTurn(state) {
+  const turn = chatTurns.find(item => item.runId === state.run_id);
+  if (!turn) return;
+  turn.state = state;
+  renderChatThread();
+}
+
+function saveChatHistory() {
+  sessionStorage.setItem("orchestrator_chat_history", JSON.stringify(chatTurns.slice(-20).map(t => ({
+    prompt: t.prompt, reply: t.reply || "", runId: t.runId || null,
+  }))));
+}
+
+async function answerChatFollowup(prompt) {
+  const latest = [...chatTurns].reverse().find(turn => turn.state);
+  if (!latest) return false;
+  const state = latest.state;
+  const { reply, files } = chatOutcome(state);
+  let answer = "";
+  if (/^(where|which folder|what(?:'s| is) (?:the )?(?:file path|location)|(give|tell|show) me.*\b(?:pic|picture|image|file)\b.*\b(?:location|path))/i.test(prompt)) {
+    const wantedPicture = /\b(pic|picture|image|drawing)\b/i.test(prompt);
+    const matchingFiles = wantedPicture
+      ? files.filter(f => /\.(png|jpg|jpeg|bmp|gif|webp)$/i.test(f.path)) : files;
+    answer = matchingFiles.length
+      ? `I saved it in ${matchingFiles.map(f => `workspace/${state.run_id}/${f.path}`).join(", ")}.`
+      : wantedPicture ? "I did not save a picture, so there is no picture location to give you."
+        : "I don't see a saved file for that task yet. Open task details to check its results.";
+  } else if (/^(what(?:'s| is) (?:the )?(?:status|progress)|are you (?:done|finished|working)|did (?:it|you) (?:finish|work)|what did you do)/i.test(prompt) && prompt.length < 120) {
+    answer = reply + (files.length ? ` Saved files: ${files.map(f => `workspace/${state.run_id}/${f.path}`).join(", ")}.` : "");
+  } else if (/^(what did you write|what(?:'s| is) in (?:it|the file)|show me (?:the )?(?:contents|file)|read (?:it|the file) back)/i.test(prompt)) {
+    const file = files.find(f => /\.(txt|md|html|css|js|json|csv|py)$/i.test(f.path));
+    if (file) {
+      try {
+        const response = await fetchWorkspaceFile(file.path, state.run_id);
+        answer = `Here is ${file.path}:\n${(await response.text()).slice(0, 2500)}`;
+      } catch (err) { answer = `I couldn't read that file: ${err.message}`; }
+    } else answer = "I don't see a readable text file from that task yet.";
+  }
+  if (!answer) return false;
+  chatTurns.push({ prompt, reply: answer });
+  saveChatHistory();
+  renderChatThread();
+  return true;
+}
+
+async function restoreChatRuns() {
+  let history = [];
+  try { history = JSON.parse(sessionStorage.getItem("orchestrator_chat_history") || "[]"); } catch (_) {}
+  if (!Array.isArray(history)) history = [];
+  if (!history.length && savedRuns.length) history = [{ runId: savedRuns[0].run_id }];
+  const restored = await Promise.all(history.slice(-20).map(async item => {
+    if (!item.runId) return item.prompt && item.reply ? { prompt: item.prompt, reply: item.reply } : null;
+    try {
+      const state = await api(`/api/runs/${encodeURIComponent(item.runId)}`);
+      return { prompt: item.prompt || state.description || "Task", runId: state.run_id, state };
+    } catch (_) { return null; } // deleted runs are dropped from this chat
+  }));
+  chatTurns = restored.filter(Boolean);
+  saveChatHistory();
+  renderChatThread();
+  const latest = [...chatTurns].reverse().find(turn => turn.state);
+  if (latest?.state?.busy) await selectRun(latest.runId, false);
+}
+
+function addChatReceipt(message) {
+  chatReceipts.push(message);
+  chatReceipts = chatReceipts.slice(-6);
+  $("#chat-receipts").innerHTML = chatReceipts.map(item => `
+    <div class="chat-message user">
+      <span class="chat-avatar">YOU</span>
+      <div class="chat-bubble">${esc(item)}</div>
+    </div>`).join("");
+  if (runId) $("#ask-panel").hidden = false;
+}
+
+function renderTaskSetupQuestions(data) {
+  if (!runId) return;
+  const questions = data.questions || [];
+  const signature = JSON.stringify([runId, questions]);
+  if (signature === taskSetupSignature) return;
+  taskSetupSignature = signature;
+  const host = $("#task-setup-chat");
+  host.innerHTML = questions.map(q => {
+    const id = `chat-cred-${q.env_var}`;
+    const err = `${id}-err`;
+    const why = q.why_this_workflow
+      ? `<span class="why">Why this task needs it: ${esc(q.why_this_workflow)}</span>` : "";
+    const link = q.url
+      ? `<a class="getlink" href="${esc(q.url)}" target="_blank" rel="noopener">Get it here →</a>` : "";
+    return `<div class="chat-message agent">
+      <span class="chat-avatar">AI</span>
+      <div class="chat-bubble">
+        <h3>I need ${esc(q.label)}</h3>
+        <p class="desc">${esc(q.description)}</p>${why}${link}
+        <div class="row">
+          <input id="${id}" type="${q.secret ? "password" : "text"}"
+                 placeholder="${esc(q.placeholder || "Paste or enter it here")}" class="grow"
+                 aria-label="${esc(q.label)}">
+          <button class="primary" data-chat-save="${esc(q.env_var)}"
+                  data-input-id="${id}" data-error-id="${err}">Save &amp; continue</button>
+        </div>
+        <div class="ask-err" id="${err}"></div>
+      </div></div>`;
+  }).join("");
+  host.querySelectorAll("[data-chat-save]").forEach(button =>
+    button.addEventListener("click", () => saveCredential(
+      button.dataset.chatSave, button.dataset.inputId, button.dataset.errorId, true)));
+  const hasPending = snapshot && (Object.keys(snapshot.pending_inputs || {}).length
+    || Object.keys(snapshot.pending_actions || {}).length);
+  $("#ask-panel").hidden = !(questions.length || hasPending || chatReceipts.length);
+}
 
 async function refreshSetup() {
   let data;
@@ -850,7 +2448,9 @@ async function refreshSetup() {
     return;
   }
 
-  const signature = JSON.stringify(data.questions.map(q => q.env_var));
+  renderTaskSetupQuestions(data);
+
+  const signature = JSON.stringify([runId, data.questions]);
   if (signature === setupSignature) return;   // don't wipe what's being typed
   setupSignature = signature;
 
@@ -881,6 +2481,7 @@ async function refreshSetup() {
     html += rest.map(cardFor).join("");
   }
   $("#setup").innerHTML = html;
+  $("#setup").querySelectorAll(".setup-card input").forEach(input => input.setAttribute("aria-label", input.id.replace("cred-", "Credential for ")));
 
   $("#setup").querySelectorAll("[data-save]").forEach(btn =>
     btn.addEventListener("click", () => saveCredential(btn.dataset.save)));
@@ -911,9 +2512,10 @@ function cardFor(q) {
   </div>`;
 }
 
-async function saveCredential(envVar) {
-  const input = document.getElementById(`cred-${envVar}`);
-  const errBox = document.getElementById(`cred-${envVar}-err`);
+async function saveCredential(envVar, inputId = `cred-${envVar}`,
+                              errorId = `cred-${envVar}-err`, fromChat = false) {
+  const input = document.getElementById(inputId);
+  const errBox = document.getElementById(errorId);
   errBox.textContent = "";
   const value = (input.value || "").trim();
   if (!value) { errBox.textContent = "Paste the value first."; return; }
@@ -924,9 +2526,12 @@ async function saveCredential(envVar) {
     });
     log(`saved ${envVar} — now using ${result.llm_mode}`, "var(--done)");
     input.value = "";
+    if (fromChat) addChatReceipt(`${envVar} was supplied securely. Its value is not shown in chat.`);
     setupSignature = null;            // force a rebuild; this one is answered
+    taskSetupSignature = null;
     await refreshSetup();
     await refreshHealth();
+    if (runId) render(await api(`/api/runs/${runId}`));
   } catch (err) {
     errBox.textContent = err.message;  // server-side validation is authoritative
   }
@@ -935,7 +2540,7 @@ async function saveCredential(envVar) {
 async function refreshHealth() {
   try {
     const health = await api("/api/health");
-    $("#llm-mode").textContent = "llm: " + health.config.llm_mode;
+    renderHealth(health);
     await refreshIdentity();
   } catch (_) {}
 }
@@ -970,11 +2575,62 @@ function fieldFor(stepId, req) {
 
 let askSignature = null;
 
+function emailActionBlock(stepId, action) {
+  const email = action.email || {};
+  const message = email.message || {};
+  const status = email.status || "choose_method";
+  let instruction = "Open Gmail to compose this exact message. Nothing is sent yet.";
+  let primary = "";
+
+  if (status === "sent" && email.reviewed_digest === email.digest) {
+    instruction = "This exact email was already sent. Finish the task without opening Gmail or sending it again.";
+    primary = `<button class="primary" data-approve-action="${esc(stepId)}"
+                       data-tool="adaptive_email">Finish task</button>`;
+  } else if (email.browser_available) {
+    if (status === "draft_ready") {
+      instruction = "The Gmail draft is ready. Review it in the browser, then send the exact message below.";
+      primary = `<button class="primary" data-approve-action="${esc(stepId)}"
+                         data-tool="adaptive_email">Send reviewed email</button>`;
+    } else if (status === "sign_in_needed") {
+      instruction = "Sign in to Gmail in the opened browser, then let me prepare the draft. Nothing will be sent.";
+      primary = `<button class="primary" data-prepare-email="${esc(stepId)}">Prepare Gmail draft</button>`;
+    } else {
+      if (email.stale_draft) {
+        instruction = "The email changed after the previous draft was reviewed. Open Gmail again to prepare this exact version.";
+      }
+      primary = `<button class="primary" data-open-email="${esc(stepId)}"
+                         data-digest="${esc(email.digest || "")}">Open Gmail</button>`;
+    }
+  } else if (email.api_available) {
+    instruction = "The Gmail browser is unavailable, so the configured email connection is the fallback.";
+    primary = `<button class="primary" data-approve-action="${esc(stepId)}"
+                       data-tool="adaptive_email">Send reviewed email</button>`;
+  } else {
+    instruction = "The Gmail browser is not connected. Restart the project so its browser tools can load.";
+    primary = `<button disabled>Gmail browser unavailable</button>`;
+  }
+
+  return `<div class="chat-message agent">
+    <span class="chat-avatar">AI</span>
+    <div class="chat-bubble"><div class="action-card">
+      <h3 style="margin:0;font-size:.8rem">${esc(stepId)} — email review</h3>
+      <p class="desc">${esc(instruction)}</p>
+      <div class="what"><b>To:</b> ${esc(message.to || "(missing recipient)")}<br>
+        <b>Subject:</b> ${esc(message.subject || "(no subject)")}</div>
+      <pre>${esc(message.body || "")}</pre>
+      <div class="row" style="margin-top:.5rem">
+        ${primary}
+        <button class="danger" data-reject-action="${esc(stepId)}">Reject</button>
+      </div>
+    </div></div></div>`;
+}
+
 function renderAsk(state) {
   const inputs = state.pending_inputs || {};
   const actions = state.pending_actions || {};
   const hasWork = Object.keys(inputs).length || Object.keys(actions).length;
-  $("#ask-panel").hidden = !hasWork;
+  const hasSetup = $("#task-setup-chat").childElementCount > 0;
+  $("#ask-panel").hidden = !(hasWork || hasSetup || chatReceipts.length);
   if (!hasWork) { $("#ask").innerHTML = ""; askSignature = null; return; }
 
   // Snapshots arrive continuously over the WebSocket. Re-rendering on every
@@ -982,41 +2638,118 @@ function renderAsk(state) {
   // against a field, so only rebuild when the questions themselves change.
   const signature = JSON.stringify([
     Object.entries(inputs).map(([s, rs]) => [s, rs.map(r => [r.name, r.provided])]),
-    Object.keys(actions).sort(),
+    actions,
   ]);
   if (signature === askSignature) return;
   askSignature = signature;
 
   const inputBlocks = Object.entries(inputs).map(([stepId, reqs]) => `
-    <div class="ask-group" data-step="${esc(stepId)}">
-      <h3>${esc(stepId)}</h3>
+    <div class="chat-message agent">
+    <span class="chat-avatar">AI</span>
+    <div class="chat-bubble"><div class="ask-group" data-step="${esc(stepId)}">
+      <h3>${esc(friendly(stepId))}</h3>
+      <p class="desc">I need a little more information before this step can continue.</p>
       ${reqs.map(r => fieldFor(stepId, r)).join("")}
       <button class="primary" data-submit="${esc(stepId)}">Submit &amp; continue</button>
-    </div>`).join("");
+    </div></div></div>`).join("");
 
-  const actionBlocks = Object.entries(actions).map(([stepId, a]) => `
-    <div class="action-card">
+  const actionBlocks = Object.entries(actions).map(([stepId, a]) =>
+    a.tool === "adaptive_email" ? emailActionBlock(stepId, a) : `
+    <div class="chat-message agent">
+    <span class="chat-avatar">AI</span>
+    <div class="chat-bubble"><div class="action-card">
       <h3 style="margin:0;font-size:.8rem">${esc(stepId)} — approval needed</h3>
+      <p class="desc">I’m ready to act, but I need you to review the exact operation first.</p>
       <div class="what"><b>${esc(a.tool)}</b>${a.irreversible ? " · irreversible" : ""}<br>
         ${esc(a.preview)}</div>
       <pre>${esc(a.payload_preview || "")}</pre>
       <div class="row" style="margin-top:.5rem">
-        <button class="primary" data-approve-action="${esc(stepId)}">Do it</button>
+        <button class="primary" data-approve-action="${esc(stepId)}"
+                data-tool="${esc(a.tool || "")}">Approve action</button>
         <button class="danger" data-reject-action="${esc(stepId)}">Reject</button>
       </div>
-    </div>`).join("");
+    </div></div></div>`).join("");
 
   $("#ask").innerHTML = inputBlocks + actionBlocks;
 
   $("#ask").querySelectorAll("[data-submit]").forEach(btn =>
     btn.addEventListener("click", () => submitInputs(btn.dataset.submit, inputs)));
   $("#ask").querySelectorAll("[data-approve-action]").forEach(btn =>
-    btn.addEventListener("click", () =>
-      act(`/api/runs/${runId}/actions/${btn.dataset.approveAction}/approve`)));
+    btn.addEventListener("click", () => approveAction(btn.dataset.approveAction,
+                                                      btn.dataset.tool || "")));
+  $("#ask").querySelectorAll("[data-open-email]").forEach(btn =>
+    btn.addEventListener("click", () => openEmailBrowser(btn.dataset.openEmail,
+                                                         btn.dataset.digest || "")));
+  $("#ask").querySelectorAll("[data-prepare-email]").forEach(btn =>
+    btn.addEventListener("click", () => prepareEmailDraft(btn.dataset.prepareEmail)));
   $("#ask").querySelectorAll("[data-reject-action]").forEach(btn =>
-    btn.addEventListener("click", () =>
-      act(`/api/runs/${runId}/actions/${btn.dataset.rejectAction}/reject`, {
-        method: "POST", body: JSON.stringify({ reason: "rejected from the dashboard" }) })));
+    btn.addEventListener("click", async () => {
+      const result = await act(`/api/runs/${runId}/actions/${btn.dataset.rejectAction}/reject`, {
+        method: "POST", body: JSON.stringify({ reason: "rejected from the dashboard" }) });
+      if (result) addChatReceipt(`Rejected the requested action for ${friendly(btn.dataset.rejectAction)}.`);
+    }));
+}
+
+async function openEmailBrowser(stepId, digest) {
+  const confirmed = await requestConfirmation({
+    title: "Open Gmail?",
+    message: "The orchestrator will open Gmail for this message. Nothing will be sent yet.",
+    acceptLabel: "Open Gmail",
+  });
+  if (!confirmed) return;
+  const result = await act(`/api/runs/${runId}/email/${stepId}/open-browser`, {
+    method: "POST",
+    body: JSON.stringify({ approved: true, digest }),
+  });
+  if (result) addChatReceipt("Gmail opened. Sign in if needed, then click Prepare Gmail draft.");
+}
+
+async function prepareEmailDraft(stepId) {
+  const result = await act(`/api/runs/${runId}/email/${stepId}/prepare-browser`, {
+    method: "POST",
+  });
+  if (result) addChatReceipt("The Gmail draft is ready. Review it in Gmail before sending.");
+}
+
+// Sending mail is approved against a digest of the exact message, so that
+// what a person read is provably what leaves the machine. A bare POST is
+// refused, which is why this reads the held email back first and echoes its
+// digest -- approving something the server has since changed should fail.
+async function approveAction(stepId, tool) {
+  const path = `/api/runs/${runId}/actions/${stepId}/approve`;
+  if (tool !== "adaptive_email") {
+    const result = await act(path);
+    if (result) addChatReceipt(`Approved ${friendly(tool)} for ${friendly(stepId)}.`);
+    return result;
+  }
+
+  try {
+    const email = await api(`/api/runs/${runId}/email/${stepId}`);
+    const message = email.message || {};
+    const to = message.to || "(no recipient)";
+    const alreadySent = email.status === "sent" && email.reviewed_digest === email.digest;
+    const confirmed = await requestConfirmation({
+      title: alreadySent ? "Finish this task?" : "Send this email?",
+      message: alreadySent
+        ? "This exact email is already recorded as sent. Finishing will not send it again."
+        : "This action is irreversible. Review the exact message before sending.",
+      details: `To: ${to}\nSubject: ${message.subject || "(none)"}\n\n${(message.body || "").slice(0, 400)}`,
+      acceptLabel: alreadySent ? "Finish task" : "Send email",
+      danger: !alreadySent,
+    });
+    if (!confirmed) return;
+    const result = await act(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ approved: true, digest: email.digest }),
+    });
+    if (result) addChatReceipt(alreadySent
+      ? `Finished ${friendly(stepId)} without sending a duplicate email.`
+      : `Approved the reviewed email for ${friendly(stepId)}.`);
+    return result;
+  } catch (err) {
+    log(`could not approve the email: ${err.message}`, "var(--danger)");
+  }
 }
 
 async function submitInputs(stepId, inputs) {
@@ -1033,6 +2766,9 @@ async function submitInputs(stepId, inputs) {
     log(`inputs supplied for ${stepId}` +
         (result.still_pending.length ? `, still need: ${result.still_pending.join(", ")}` : ""),
         "var(--done)");
+    addChatReceipt(`Answered ${friendly(stepId)}${result.still_pending.length
+      ? "; it still needs " + result.still_pending.map(friendly).join(", ")
+      : "; the task can continue"}.`);
   } catch (err) {
     // Server-side validation is authoritative; surface it on the field.
     const match = /'([^']+)'/.exec(err.message);
@@ -1044,6 +2780,9 @@ async function submitInputs(stepId, inputs) {
 
 function render(state) {
   snapshot = state;
+  updateChatTurn(state);
+  renderConversation(state);
+  renderTaskExperience(state);
   renderGraph(state);
   renderGuide(state);
   renderSteps(state);
@@ -1059,8 +2798,21 @@ function render(state) {
   refreshSetup();
   const has = Boolean(runId);
   ["#btn-run", "#btn-rerun", "#btn-resume"].forEach((id) => { $(id).disabled = !has || state.busy; });
+  $("#btn-delete-task").disabled = !has || state.busy || currentRole === "viewer";
   $("#btn-stop").disabled = !has || !state.busy || state.cancellation_requested;
-  $("#btn-stop").textContent = state.cancellation_requested ? "Stopping…" : "Stop run";
+  $("#btn-stop").textContent = state.cancellation_requested ? "Stopping…" : "Stop task";
+  syncTaskControls(state);
+}
+
+function renderConversation(state) {
+  const { reply, files } = chatOutcome(state);
+  const fileLinks = files.map(f => `<button class="text-button" type="button" data-chat-file="${esc(f.path)}">workspace/${esc(state.run_id)}/${esc(f.path)}</button>`).join(" ");
+  const result = files.length ? `<p>Saved file${files.length === 1 ? "" : "s"} (click to open): ${fileLinks}</p>` : "";
+  $("#conversation-messages").innerHTML = `
+    <div class="chat-message user"><span class="chat-avatar">YOU</span><div class="chat-bubble">${esc(state.description || "")}</div></div>
+    <div class="chat-message agent"><span class="chat-avatar">AI</span><div class="chat-bubble">${esc(reply)}${result}</div></div>`;
+  $("#conversation-messages").querySelectorAll("[data-chat-file]").forEach(button =>
+    button.addEventListener("click", () => viewWorkspaceFile(button.dataset.chatFile)));
 }
 
 // -- actions ---------------------------------------------------------------
@@ -1072,9 +2824,12 @@ async function act(path, options = { method: "POST" }) {
       log(`impact: ${result.impact.affected_count} affected, ` +
           `${result.impact.reusable_count} reusable`, "var(--accent)");
     }
+    if (runId) render(await api(`/api/runs/${runId}`));
     return result;
   } catch (err) {
     log("error: " + err.message, "var(--failed)");
+    notifyError(err.message);
+    return null;
   }
 }
 
@@ -1187,8 +2942,15 @@ async function deleteStep(stepId) {
   const step = snapshot.steps.find(s => s.id === stepId);
   const dependents = snapshot.steps.filter(s => s.depends_on.includes(stepId)).map(s => s.id);
   const warning = dependents.length
-    ? `\n\n${dependents.join(", ")} depend on it and will need to re-run.` : "";
-  if (!window.confirm(`Delete step "${stepId}"?${warning}`)) return;
+    ? `${dependents.map(friendly).join(", ")} depend on it and will need to re-run.`
+    : "This step has no dependent steps.";
+  const confirmed = await requestConfirmation({
+    title: `Delete ${friendly(stepId)}?`,
+    message: warning,
+    acceptLabel: "Delete step",
+    danger: true,
+  });
+  if (!confirmed) return;
   await act(`/api/runs/${runId}/steps/${stepId}`, { method: "DELETE" });
   log(`deleted ${stepId}`, "var(--paused)");
   render(await api(`/api/runs/${runId}`));
@@ -1230,18 +2992,28 @@ function openNewStepForm() {
   });
 }
 
-function startNewWorkflow() {
+function startNewWorkflow(resetChat = true) {
   // Deselect the current run so nothing carries over implicitly.
   if (socket) { socket.onclose = null; socket.close(); socket = null; }
   runId = null;
   snapshot = null;
   askSignature = null;
   setupSignature = null;
+  taskSetupSignature = null;
+  chatReceipts = [];
+  if (resetChat) { chatTurns = []; saveChatHistory(); renderChatThread(); }
+  $("#chat-receipts").innerHTML = "";
+  $("#task-setup-chat").innerHTML = "";
+  $("#ws-state").textContent = "Ready";
+  $("#ws-state").className = "pill";
   $("#desc").value = "";
+  $("#home-chat-status").hidden = true;
   $("#clarify-panel").hidden = true;
   $("#ask-panel").hidden = true;
   $("#new-step").hidden = true;
   $("#new-webhook-url").innerHTML = "";
+  $("#tools").innerHTML = "";
+  $("#tools-context").textContent = "Select a task to inspect its tools and connection status.";
   $("#graph").innerHTML = '<div class="empty">Describe a task above to begin.</div>';
   $("#steps").innerHTML = '<div class="empty">No workflow loaded.</div>';
   $("#guide-title").textContent = "Describe what you want completed";
@@ -1249,26 +3021,37 @@ function startNewWorkflow() {
   $("#progress-fill").style.width = "0%";
   $("#progress-note").textContent = "No workflow selected";
   $("#run-picker").value = "";
-  ["#btn-run", "#btn-rerun", "#btn-resume", "#btn-stop"].forEach(id => { $(id).disabled = true; });
+  ["#btn-run", "#btn-rerun", "#btn-resume", "#btn-stop", "#btn-delete-task"].forEach(id => { $(id).disabled = true; });
+  showView("home");
+  renderRunLists();
   $("#desc").focus();
   log("started a new workflow — nothing from the previous one carries over");
   refreshSetup();
 }
 
-async function promptChange(stepId) {
+let requirementChangeStepId = null;
+
+function openRequirementChange(stepId) {
   const step = snapshot?.steps.find((s) => s.id === stepId);
-  const next = window.prompt(
-    `New requirement for "${stepId}".\n\nCurrent: ${step ? step.description : ""}`,
-    "");
-  if (next === null || !next.trim()) return;
-  log(`change requested on ${stepId}`, "var(--accent)");
-  await act(`/api/runs/${runId}/steps/${stepId}/change`, {
-    method: "POST",
-    body: JSON.stringify({ new_requirement: next.trim() }),
-  });
+  if (!step) { notifyError("That step is no longer available. Refresh the task and try again."); return; }
+
+  requirementChangeStepId = stepId;
+  $("#change-requirement-title").textContent = `Change ${friendly(stepId)}`;
+  $("#change-requirement-current").textContent = step.description || "No description";
+  $("#change-requirement-input").value = "";
+  $("#change-requirement-error").textContent = "";
+  $("#change-requirement-submit").disabled = false;
+  $("#change-requirement-dialog").showModal();
+  $("#change-requirement-input").focus();
+}
+
+function closeRequirementChange() {
+  requirementChangeStepId = null;
+  $("#change-requirement-dialog").close();
 }
 
 function connect(id) {
+  if (runId !== id) return;
   if (socket) { socket.onclose = null; socket.close(); }
   const proto = location.protocol === "https:" ? "wss" : "ws";
   socket = new WebSocket(`${proto}://${location.host}/ws/${id}`);
@@ -1283,6 +3066,7 @@ function connect(id) {
     if (runId === id) setTimeout(() => connect(id), 2000);  // auto-reconnect
   };
   socket.onmessage = (message) => {
+    if (runId !== id) return;
     const payload = JSON.parse(message.data);
     if (payload.type === "snapshot") render(payload.data);
     else if (payload.type === "event") {
@@ -1292,18 +3076,29 @@ function connect(id) {
   };
 }
 
-async function selectRun(id) {
+async function selectRun(id, openTask = true) {
+  const state = await api(`/api/runs/${id}`);
+  if (socket) { socket.onclose = null; socket.close(); socket = null; }
   runId = id;
+  askSignature = null;
+  setupSignature = null;
+  taskSetupSignature = null;
+  chatReceipts = [];
+  $("#chat-receipts").innerHTML = "";
+  $("#task-setup-chat").innerHTML = "";
+  $("#steps").innerHTML = "";
   $("#new-webhook-url").innerHTML = "";
   $("#run-picker").value = id;
-  render(await api(`/api/runs/${id}`));
+  render(state);
+  if (openTask) { showView("task"); setTaskTab("plan"); }
   connect(id);
-  await refreshTemplates();
-  await refreshAudit();
+  if (openTask) { await refreshTemplates(); await refreshAudit(); }
 }
 
 async function refreshRuns() {
   const runs = await api("/api/runs");
+  savedRuns = runs;
+  renderRunLists();
   $("#run-picker").innerHTML = runs.length
     ? runs.map((r) => `<option value="${esc(r.run_id)}">${esc(r.run_id)} — ${esc(
         (r.description || "untitled").slice(0, 40))}</option>`).join("")
@@ -1319,11 +3114,15 @@ let pendingClarifications = null;
 async function doPlan(description, clarifications) {
   $("#btn-plan").disabled = true;
   $("#btn-plan").textContent = "Planning…";
+  $("#home-chat-status").hidden = false;
+  $("#home-chat-status").textContent = "AI: I’m making a plan for your task…";
   try {
+    const previousRunId = [...chatTurns].reverse().find(turn => turn.runId)?.runId || null;
     const state = await api("/api/runs", {
       method: "POST",
       body: JSON.stringify({
         description,
+        previous_run_id: previousRunId,
         clarifications: clarifications || {},
         parallel: $("#opt-parallel").checked,
         smart_invalidation: $("#opt-smart").checked,
@@ -1335,13 +3134,34 @@ async function doPlan(description, clarifications) {
     // re-planning whatever was typed before.
     $("#desc").value = "";
     pendingClarifications = null;
+    if (pendingChatTurn) {
+      pendingChatTurn.runId = state.run_id;
+      pendingChatTurn.state = state;
+      pendingChatTurn = null;
+      saveChatHistory();
+      renderChatThread();
+    }
     await refreshRuns();
-    await selectRun(state.run_id);
+    await selectRun(state.run_id, false);
+    if (state.requirements?.can_run !== false && !Object.keys(state.pending_inputs || {}).length
+        && !Object.keys(state.pending_actions || {}).length) {
+      const started = await act(`/api/runs/${state.run_id}/run`, {
+        method: "POST", body: JSON.stringify({ fresh: false }),
+      });
+      if (!started) $("#home-chat-status").textContent = "AI: The plan is ready, but I could not start it. Open the task for details.";
+    }
   } catch (err) {
     log("planning failed: " + err.message, "var(--failed)");
+    $("#home-chat-status").textContent = "AI: I could not plan this task: " + err.message;
+    if (pendingChatTurn) {
+      pendingChatTurn.reply = "I could not plan this task: " + err.message;
+      pendingChatTurn = null;
+      saveChatHistory();
+      renderChatThread();
+    }
   } finally {
     $("#btn-plan").disabled = false;
-    $("#btn-plan").textContent = "Plan workflow";
+    $("#btn-plan").textContent = "Send";
   }
 }
 
@@ -1406,6 +3226,21 @@ function renderClarify(description, questions, useRemembered = true) {
 $("#btn-plan").addEventListener("click", async () => {
   const description = $("#desc").value.trim();
   if (description.length < 3) { log("describe the project first", "var(--failed)"); return; }
+  if (pendingChatTurn) return;
+  if (await answerChatFollowup(description)) { $("#desc").value = ""; return; }
+  pendingChatTurn = { prompt: description, reply: "I’m checking what I need to do this…" };
+  chatTurns.push(pendingChatTurn);
+  renderChatThread();
+  $("#desc").value = "";
+  $("#home-chat-status").hidden = false;
+  $("#home-chat-status").textContent = "YOU: " + description + "\nAI: I’m checking what I need to do this…";
+
+  // A referential follow-up has context from the previous run. Let the task
+  // planner see that context directly instead of asking about an isolated "it".
+  if (chatTurns.some(turn => turn.runId) && /\b(it|that|this|same|previous|first tip|second tip|third tip)\b/i.test(description)) {
+    await doPlan(description, {});
+    return;
+  }
 
   // Ask before planning: answers here change the whole shape of the plan,
   // so it is much cheaper to ask now than to re-plan afterwards.
@@ -1420,10 +3255,13 @@ $("#btn-plan").addEventListener("click", async () => {
     log("could not get clarifying questions: " + err.message, "var(--paused)");
   } finally {
     $("#btn-plan").disabled = false;
-    $("#btn-plan").textContent = "Plan workflow";
+    $("#btn-plan").textContent = "Send";
   }
 
   if (clarify.questions && clarify.questions.length) {
+    $("#home-chat-status").textContent = "AI: I need a little more information before I start. Answer below.";
+    if (pendingChatTurn) pendingChatTurn.reply = "I need a little more information before I start. Please answer below.";
+    renderChatThread();
     log(`asking ${clarify.questions.length} question(s) before planning`, "var(--accent)");
     renderClarify(description, clarify.questions);
   } else {
@@ -1431,8 +3269,33 @@ $("#btn-plan").addEventListener("click", async () => {
   }
 });
 
-$("#btn-run").addEventListener("click", () =>
-  act(`/api/runs/${runId}/run`, { method: "POST", body: JSON.stringify({ fresh: false }) }));
+$("#chat-next-send").addEventListener("click", () => {
+  const request = $("#chat-next-task").value.trim();
+  if (!request) return;
+  startNewWorkflow();
+  $("#desc").value = request;
+  $("#btn-plan").click();
+});
+$("#chat-next-task").addEventListener("keydown", event => {
+  if (event.key === "Enter") { event.preventDefault(); $("#chat-next-send").click(); }
+});
+
+$("#btn-run").addEventListener("click", async () => {
+  if (!runId || snapshot?.busy) return;
+  const button = $("#btn-run");
+  const oldLabel = button.textContent;
+  button.disabled = true;
+  button.textContent = "Starting…";
+  try {
+    const started = await act(`/api/runs/${runId}/run`, {
+      method: "POST", body: JSON.stringify({ fresh: false }),
+    });
+    if (!started) notifyError("The task did not start. Check the error above and try again.");
+  } finally {
+    button.textContent = oldLabel;
+    if (snapshot) syncTaskControls(snapshot);
+  }
+});
 $("#btn-rerun").addEventListener("click", () =>
   act(`/api/runs/${runId}/run`, { method: "POST", body: JSON.stringify({ fresh: true }) }));
 $("#btn-resume").addEventListener("click", () => act(`/api/runs/${runId}/resume`));
@@ -1441,6 +3304,28 @@ $("#btn-stop").addEventListener("click", async () => {
   if (result) {
     log(result.message, "var(--paused)");
     render(await api(`/api/runs/${runId}`));
+  }
+});
+$("#btn-delete-task").addEventListener("click", async () => {
+  if (!runId || !snapshot) return;
+  const deleting = runId;
+  const title = snapshot.description || "Untitled task";
+  const approved = await requestConfirmation({
+    title: "Delete this task?",
+    message: "This permanently removes the task, its plan, activity, approvals, and saved run history from the dashboard. Generated workspace files are kept on disk.",
+    details: title,
+    acceptLabel: "Delete task",
+    danger: true,
+  });
+  if (!approved || runId !== deleting) return;
+  try {
+    await api(`/api/runs/${deleting}`, {method: "DELETE"});
+    startNewWorkflow();
+    await refreshRuns();
+    showView("tasks");
+    log(`deleted task: ${title}`, "var(--done)");
+  } catch (err) {
+    notifyError(`Could not delete task: ${err.message}`);
   }
 });
 $("#btn-new").addEventListener("click", startNewWorkflow);
@@ -1521,21 +3406,179 @@ document.querySelectorAll("[data-fmt]").forEach((b) =>
     }
   }));
 
+
+let savedRuns = [];
+let activeView = "home";
+const friendly = value => String(value || "").replace(/[_-]+/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+function notifyError(message) {
+  $("#toast-message").textContent = message;
+  $("#toast").hidden = false;
+}
+function showView(view) {
+  if (view === "task" && !runId) view = "home";
+  activeView = view;
+  document.querySelectorAll(".view").forEach(el => { el.hidden = el.id !== `view-${view}`; });
+  document.querySelectorAll(".nav [data-view]").forEach(el => {
+    const active = el.dataset.view === view || (view === "task" && el.dataset.view === "tasks");
+    el.classList.toggle("active", active);
+    if (active) el.setAttribute("aria-current", "page"); else el.removeAttribute("aria-current");
+  });
+  $("#page-name").textContent = ({home:"Overview",tasks:"All tasks",task:"Task details",connections:"Connections",automation:"Automations",settings:"Settings"})[view];
+  $("#sidebar").classList.remove("open");
+  $("#menu-toggle").setAttribute("aria-expanded", "false");
+  syncMobileNavigation();
+  $("#task-automations").hidden = !runId;
+  $("#automation-notice").hidden = !!runId;
+  $("#btn-save-template").disabled = !runId;
+  if (runId) $("#automation-task-name").textContent = "For task: " + (snapshot?.description || runId);
+  if (view === "connections") refreshSetup();
+  if (view === "tasks") refreshRuns().catch(err => notifyError(err.message));
+  window.scrollTo({top:0, behavior:"instant"});
+}
+function setTaskTab(tab) {
+  for (const name of ["plan", "results", "activity"]) $("#tab-" + name).hidden = name !== tab;
+  document.querySelectorAll("[data-tab]").forEach(el => {
+    el.classList.toggle("active", el.dataset.tab === tab);
+    if (el.dataset.tab === tab) el.setAttribute("aria-current", "page"); else el.removeAttribute("aria-current");
+  });
+}
+function renderHealth(health) {
+  const mode = String(health.config.llm_mode || "Unknown");
+  const model = String(health.config.model || "");
+  const endpoint = String(health.config.endpoint || "");
+  const ready = health.config.provider_ready !== false;
+  const demo = ready && /stub|offline|deterministic/i.test(health.config.active_provider || mode);
+  // Show the model, not the provider: "openai" is true of GPT, DeepSeek and a
+  // local gateway alike, so naming the provider answered nothing.
+  $("#llm-mode").textContent = !ready ? "Model unavailable ↗" : demo ? "Demo mode ↗" : (model || friendly(mode)) + " ↗";
+  $("#provider-description").textContent = !ready
+    ? health.config.provider_error || "The configured AI model is unavailable."
+    : demo
+    ? "Demo mode is active. Connect an AI provider below for real model output."
+    : "Your current model: " + (model || "unknown") + " · " + friendly(mode)
+      + (endpoint ? " · " + endpoint : "");
+  $("#demo-notice").hidden = ready && !demo;
+  $("#demo-notice span").textContent = ready
+    ? "You’re in demo mode. Tasks use sample AI output until you connect a model."
+    : "The AI model is unavailable. Tasks cannot start until the connection is fixed.";
+  $("#workspace-mode").textContent = health.api_auth_required ? "Team workspace" : "Local workspace";
+}
+function renderRunLists() {
+  const search = $("#task-search").value.toLowerCase();
+  const makeRows = rows => rows.length ? rows.map(run => {
+    const created = run.created_at ? new Date(run.created_at * 1000).toLocaleDateString(undefined, {month:"short",day:"numeric"}) : "Saved task";
+    return `<button class="run-row" data-run="${esc(run.run_id)}"><span class="run-symbol">↗</span><span class="run-copy"><b>${esc(run.description || "Untitled task")}</b><small>${esc(created)} · Open plan and results</small></span><span aria-hidden="true">→</span></button>`;
+  }).join("") : '<div class="empty"><b>No tasks here yet</b>Create a plan above to get your first task underway.</div>';
+  $("#recent-tasks").innerHTML = makeRows(savedRuns.slice(0,3));
+  const matches = savedRuns.filter(run => String(run.description || "").toLowerCase().includes(search));
+  $("#all-tasks").innerHTML = matches.length || !search ? makeRows(matches) : '<div class="empty"><b>No matching tasks</b>Try a different search.</div>';
+  document.querySelectorAll("[data-run]").forEach(el => el.addEventListener("click", () => selectRun(el.dataset.run).catch(err => notifyError(err.message))));
+}
+function renderTaskExperience(state) {
+  $("#task-title").textContent = state.description || "Untitled task";
+  const attentionCount = Object.keys(state.pending_inputs || {}).length + Object.keys(state.pending_actions || {}).length;
+  document.querySelector('[data-tab="plan"]').textContent = attentionCount ? `Plan & progress · ${attentionCount} needs you` : "Plan & progress";
+  const roles = new Set(state.steps.map(step => step.agent_role));
+  $("#task-subtitle").textContent = `${state.steps.length} steps · ${roles.size} specialist${roles.size === 1 ? "" : "s"} · Progress saved automatically`;
+  $("#attention-link").hidden = !(state.requirements?.blockers?.length);
+  $("#tools-context").textContent = "Tools for: " + (state.description || "Selected task");
+  $("#plan-list").innerHTML = state.steps.map((step,index) => `<div class="plan-item"><span class="step-number">${["done","skipped"].includes(step.result.status) ? "✓" : index+1}</span><div><b>${esc(friendly(step.id))}</b><p>${esc(step.description)}</p><span class="badge muted">${esc(friendly(step.agent_role))}</span> <span class="badge" style="background:${STATUS_COLOURS[step.result.status] || "var(--pending)"}">${esc(STATUS_LABELS[step.result.status] || step.result.status)}</span></div></div>`).join("");
+}
+function syncTaskControls(state) {
+  const statuses = state.steps.map(step => step.result.status);
+  const initial = statuses.every(status => status === "pending");
+  const complete = statuses.every(status => ["done","skipped","not_applicable"].includes(status));
+  const waiting = Object.keys(state.pending_inputs || {}).length || Object.keys(state.pending_actions || {}).length;
+  $("#btn-run").hidden = !initial || state.busy || !!waiting;
+  $("#btn-run").disabled = state.requirements?.can_run === false;
+  $("#btn-resume").hidden = initial || complete || state.busy || !!waiting;
+  $("#btn-stop").hidden = !state.busy;
+  $("#btn-rerun").hidden = initial || state.busy;
+  $("#btn-delete-task").hidden = state.busy || currentRole === "viewer";
+  $("#btn-add-step").disabled = state.busy || currentRole === "viewer";
+  $("#ask-panel").setAttribute("aria-live", "polite");
+}
+function syncMobileNavigation() {
+  $("#sidebar").inert = window.matchMedia("(max-width: 760px)").matches && !$("#sidebar").classList.contains("open");
+}
+window.matchMedia("(max-width: 760px)").addEventListener("change", syncMobileNavigation);
+syncMobileNavigation();
+document.querySelectorAll("[data-view]").forEach(el => el.addEventListener("click", () => showView(el.dataset.view)));
+document.querySelectorAll("[data-tab]").forEach(el => el.addEventListener("click", () => setTaskTab(el.dataset.tab)));
+$("#task-search").addEventListener("input", renderRunLists);
+$("#artifact-close").addEventListener("click", () => {
+  clearArtifactPreview();
+  $("#artifact-viewer").hidden = true;
+});
+$("#artifact-download").addEventListener("click", e => {
+  if (e.currentTarget.dataset.path) downloadWorkspaceFile(e.currentTarget.dataset.path, e.currentTarget.dataset.runId);
+});
+$("#toast-close").addEventListener("click", () => { $("#toast").hidden = true; });
+$("#menu-toggle").addEventListener("click", () => { const opened = $("#sidebar").classList.toggle("open"); $("#menu-toggle").setAttribute("aria-expanded", String(opened)); syncMobileNavigation(); if (opened) $("#btn-new").focus(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && $("#sidebar").classList.contains("open")) { $("#sidebar").classList.remove("open"); $("#menu-toggle").setAttribute("aria-expanded", "false"); syncMobileNavigation(); $("#menu-toggle").focus(); } });
+$("#main-content").addEventListener("click", () => { $("#sidebar").classList.remove("open"); $("#menu-toggle").setAttribute("aria-expanded", "false"); syncMobileNavigation(); });
+$("#login-dialog").addEventListener("cancel", () => { $("#login-dialog")._resolveLogin?.(false); });
+$("#confirmation-accept").addEventListener("click", () => finishConfirmation(true));
+$("#confirmation-cancel").addEventListener("click", () => finishConfirmation(false));
+$("#confirmation-dialog").addEventListener("cancel", () => {
+  $("#confirmation-dialog")._resolveConfirmation?.(false);
+  $("#confirmation-dialog")._resolveConfirmation = null;
+});
+$("#change-requirement-cancel").addEventListener("click", closeRequirementChange);
+$("#change-requirement-dialog").addEventListener("cancel", () => {
+  requirementChangeStepId = null;
+});
+$("#change-requirement-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const stepId = requirementChangeStepId;
+  const requirement = $("#change-requirement-input").value.trim();
+  const error = $("#change-requirement-error");
+  if (!stepId) { error.textContent = "The step is no longer selected. Close this window and try again."; return; }
+  if (!requirement) { error.textContent = "Describe what should change before continuing."; return; }
+
+  error.textContent = "";
+  $("#change-requirement-submit").disabled = true;
+  log(`change requested on ${stepId}`, "var(--accent)");
+  const result = await act(`/api/runs/${runId}/steps/${stepId}/change`, {
+    method: "POST",
+    body: JSON.stringify({ new_requirement: requirement }),
+  });
+  if (result) {
+    addChatReceipt(`Updated the requirement for ${friendly(stepId)}. Affected work is being re-run.`);
+    closeRequirementChange();
+  } else {
+    $("#change-requirement-submit").disabled = false;
+    error.textContent = "The change could not be applied. Check the error message and try again.";
+  }
+});
+const examplePrompts = {
+  app:"Build a task management web app with login, a Kanban board, and tests.",
+  research:"Research the benefits and limitations of AI agents in software development and write a concise report with sources.",
+  write:"Write a project proposal for an AI task orchestrator, covering the problem, features, architecture, and milestones."
+};
+document.querySelectorAll("[data-example]").forEach(el => el.addEventListener("click", () => { $("#desc").value = examplePrompts[el.dataset.example]; $("#desc").focus(); }));
+$("#desc").addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !$("#btn-plan").disabled) {
+    e.preventDefault();
+    $("#btn-plan").click();
+  }
+});
+window.addEventListener("unhandledrejection", e => { notifyError(e.reason?.message || "Something went wrong. Please try again."); });
+
 (async function init() {
   try {
     const health = await api("/api/health");
-    $("#llm-mode").textContent = "llm: " + health.config.llm_mode;
+    renderHealth(health);
     await refreshSetup();          // guide the user before they hit a wall
     await refreshRuns();
     await refreshTemplates();
     await refreshAudit();
-    const first = $("#run-picker").value;
-    if (first) await selectRun(first);
+    await refreshHealth();
+    startNewWorkflow(false);
+    await restoreChatRuns();
     log("dashboard ready");
   } catch (err) {
     log("startup failed: " + err.message, "var(--failed)");
   }
 })();
-</script>
-</body>
-</html>
+</script></body></html>

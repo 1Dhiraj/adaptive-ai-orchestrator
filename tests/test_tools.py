@@ -95,14 +95,68 @@ class TestReporting:
 class TestTerminalFallbacks:
     """Each capability chain must end in something that always works."""
 
-    def test_artifact_store_writes_a_file(self, tmp_path, monkeypatch):
-        import orchestrator.tools.builtin as builtin
-
-        monkeypatch.setattr(builtin, "ARTIFACT_DIR", tmp_path)
-        monkeypatch.setattr(builtin, "PROJECT_ROOT", tmp_path.parent)
-        result = ArtifactStoreTool().execute("some output", {"step_id": "backend"})
+    def test_artifact_store_writes_a_file(self, tmp_path):
+        result = ArtifactStoreTool("run-1", root=tmp_path).execute(
+            "some output", {"step_id": "backend"})
         assert "artifact_store" in result
-        assert list(tmp_path.glob("backend-*.md"))
+        assert list((tmp_path / "run-1" / "artifacts").glob("backend-*.md"))
+
+    def test_artifact_store_honours_safe_path_and_content(self, tmp_path):
+        payload = ('ignored body\nTOOL_DIRECTIVE: {"arguments": '
+                   '{"path":"artifacts/report.txt","content":"actual report"}}')
+        result = ArtifactStoreTool("run-2", root=tmp_path).execute(
+            payload, {"step_id": "store"})
+        report = tmp_path / "run-2" / "artifacts" / "report.txt"
+        assert report.read_text(encoding="utf-8") == "actual report"
+        assert "artifacts\\report.txt" in result or "artifacts/report.txt" in result
+
+    def test_artifact_store_renders_a_real_pdf(self, tmp_path):
+        payload = ('TOOL_DIRECTIVE: {"arguments": '
+                   '{"path":"artifacts/report.pdf","content":"# Findings\\n\\nVerified result"}}')
+        result = ArtifactStoreTool("pdf-run", root=tmp_path).execute(
+            payload, {"step_id": "report"})
+        report = tmp_path / "pdf-run" / "artifacts" / "report.pdf"
+
+        data = report.read_bytes()
+        assert data.startswith(b"%PDF-")
+        assert b"%%EOF" in data[-1024:]
+        assert "artifacts\\report.pdf" in result or "artifacts/report.pdf" in result
+
+    def test_pdf_step_contract_overrides_a_missing_model_directive(self, tmp_path):
+        result = ArtifactStoreTool("pdf-contract", root=tmp_path).execute(
+            "The model returned prose instead of its directive.",
+            {"step_id": "create_pdf", "step_description": (
+                "Create a PDF report named browser-results.pdf with the findings.")},
+        )
+        report = tmp_path / "pdf-contract" / "artifacts" / "browser-results.pdf"
+
+        assert report.read_bytes().startswith(b"%PDF-")
+        assert "browser-results.pdf" in result
+
+    def test_pdf_placeholder_is_replaced_with_verified_upstream_context(self, tmp_path):
+        payload = ('TOOL_DIRECTIVE: {"arguments": '
+                   '{"path":"artifacts/report.pdf",'
+                   '"content":"the complete deliverable"}}')
+        ArtifactStoreTool("pdf-evidence", root=tmp_path).execute(
+            payload,
+            {"step_id": "report", "step_description": "Create a PDF report.",
+             "upstream_context": "Heading: Example Domain\nExplanation: Verified text."},
+        )
+
+        import pdfplumber
+
+        report = tmp_path / "pdf-evidence" / "artifacts" / "report.pdf"
+        with pdfplumber.open(report) as document:
+            text = "\n".join(page.extract_text() or "" for page in document.pages)
+        assert "Example Domain" in text
+        assert "Verified text" in text
+        assert "the complete deliverable" not in text.lower()
+
+    def test_artifact_store_rejects_parent_traversal(self, tmp_path):
+        payload = ('TOOL_DIRECTIVE: {"arguments": '
+                   '{"path":"artifacts/../escape.txt","content":"no"}}')
+        with pytest.raises(ToolError, match="inside artifacts"):
+            ArtifactStoreTool("run-3", root=tmp_path).execute(payload)
 
     def test_sqlite_local_applies_real_sql(self, tmp_path):
         tool = SQLiteLocalTool(db_path=str(tmp_path / "scratch.sqlite3"))
@@ -164,3 +218,58 @@ class TestRetryInteraction:
         first, second = default_tool_manager(), default_tool_manager()
         first.break_tool("github")
         assert not second.get("github").is_broken
+
+
+class TestDirectiveEnvelope:
+    """Both spellings of TOOL_DIRECTIVE, because the codebase uses both.
+
+    `computer_use` documents {"arguments": {...}}; the built-in adapters
+    document fields at the top level. A model shown both in one prompt picks
+    either, and writing a file used to fail with "no path given" purely
+    because it had picked the wrapped form -- which reads like a bad plan
+    rather than a mismatched convention.
+    """
+
+    def test_the_flat_form_is_read(self):
+        from orchestrator.tools.builtin import _directive
+
+        assert _directive(
+            'TOOL_DIRECTIVE: {"action": "write", "path": "a.html"}'
+        ) == {"action": "write", "path": "a.html"}
+
+    def test_the_wrapped_form_is_unwrapped(self):
+        from orchestrator.tools.builtin import _directive
+
+        assert _directive(
+            'TOOL_DIRECTIVE: {"arguments": {"action": "write", "path": "a.html"}}'
+        ) == {"action": "write", "path": "a.html"}
+
+    def test_an_action_outside_the_envelope_is_kept(self):
+        from orchestrator.tools.builtin import _directive
+
+        assert _directive(
+            'TOOL_DIRECTIVE: {"action": "write", "arguments": {"path": "a.html"}}'
+        ) == {"action": "write", "path": "a.html"}
+
+    def test_a_tool_with_its_own_arguments_field_is_left_alone(self):
+        # Unwrapping here would silently discard the sibling fields.
+        from orchestrator.tools.builtin import _directive
+
+        parsed = _directive(
+            'TOOL_DIRECTIVE: {"path": "a.html", "arguments": {"x": 1}}')
+        assert parsed == {"path": "a.html", "arguments": {"x": 1}}
+
+    def test_both_forms_actually_write_the_file(self, tmp_path):
+        import json as _json
+
+        from orchestrator.tools.workspace import WorkspaceFileTool
+
+        tool = WorkspaceFileTool(run_id="envelope", root=tmp_path)
+        for path, payload in [
+            ("flat.html", {"action": "write", "path": "flat.html", "content": "a"}),
+            ("wrapped.html",
+             {"arguments": {"action": "write", "path": "wrapped.html",
+                            "content": "b"}}),
+        ]:
+            tool.execute("TOOL_DIRECTIVE: " + _json.dumps(payload))
+            assert (tool.workspace / path).exists()

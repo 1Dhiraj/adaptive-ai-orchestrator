@@ -15,6 +15,7 @@ import orchestrator.llm as llm
 from orchestrator.llm import (
     AnthropicProvider,
     LLMError,
+    NvidiaProvider,
     OllamaProvider,
     OpenAIProvider,
     build_provider,
@@ -128,6 +129,23 @@ class TestAnthropicProvider:
 
 
 class TestOpenAIProvider:
+    @pytest.fixture(autouse=True)
+    def _ignore_ambient_openai_config(self, monkeypatch):
+        """Pin the endpoint and key to their defaults for these tests.
+
+        OpenAIProvider falls back to the settings object for whatever the
+        caller leaves out, and settings are read from the environment at
+        import. A developer pointing .env.local at a compatible gateway --
+        OpenRouter, Azure, a local vLLM -- would otherwise fail the assertion
+        that requests go to api.openai.com, and would stop "no key raises"
+        from raising at all, because a key really is configured.
+        """
+        from orchestrator import llm as llm_module
+
+        monkeypatch.setattr(llm_module.settings, "openai_base_url",
+                            "https://api.openai.com/v1", raising=False)
+        monkeypatch.setattr(llm_module.settings, "openai_api_key", None, raising=False)
+
     def test_generates_and_reports_usage(self, fake_requests):
         fake_requests([OPENAI_OK])
         response = OpenAIProvider(api_key="sk-test").generate("hi")
@@ -158,6 +176,25 @@ class TestOpenAIProvider:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         with pytest.raises(LLMError, match="OPENAI_API_KEY"):
             OpenAIProvider()
+
+
+class TestNvidiaProvider:
+    def test_json_mode_forces_nonempty_content_and_disables_thinking(self, fake_requests):
+        fake = fake_requests([OPENAI_OK])
+        NvidiaProvider(api_key="nvapi-test").generate("plan", json_mode=True)
+        body = fake.calls[0]["json"]
+        assert body["response_format"] == {"type": "json_object"}
+        assert body["chat_template_kwargs"] == {
+            "force_nonempty_content": True,
+            "enable_thinking": False,
+        }
+
+    def test_normal_chat_keeps_thinking_default(self, fake_requests):
+        fake = fake_requests([OPENAI_OK])
+        NvidiaProvider(api_key="nvapi-test").generate("hello")
+        assert fake.calls[0]["json"]["chat_template_kwargs"] == {
+            "force_nonempty_content": True,
+        }
 
 
 class TestOllamaProvider:
@@ -242,13 +279,15 @@ class TestProviderSelection:
         assert Settings().resolve_provider() == "nvidia"
 
         monkeypatch.setenv("OPENAI_API_KEY", "x")
-        assert Settings().resolve_provider() == "openai", "openai outranks nvidia"
+        assert Settings().resolve_provider() == "nvidia"
 
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
-        assert Settings().resolve_provider() == "anthropic", "anthropic outranks openai"
+        assert Settings().resolve_provider() == "nvidia"
 
         monkeypatch.setenv("GEMINI_API_KEY", "x")
-        assert Settings().resolve_provider() == "gemini", "gemini outranks the rest"
+        assert Settings().resolve_provider() == "nvidia"
+        monkeypatch.delenv("NVIDIA_API_KEY")
+        assert Settings().resolve_provider() == "stub", "other providers require explicit selection"
 
     def test_explicit_llm_provider_wins_over_key_presence(self, monkeypatch):
         from orchestrator.config import Settings
@@ -274,21 +313,18 @@ class TestProviderSelection:
         monkeypatch.setenv("LLM_PROVIDER", "openai")
         assert Settings(force_stub_llm=True).resolve_provider() == "stub"
 
-    def test_get_provider_degrades_to_stub_on_construction_failure(self, monkeypatch, capsys):
+    def test_explicit_provider_failure_does_not_silently_use_stub(self, monkeypatch):
         from orchestrator import llm as llm_module
         from orchestrator.config import Settings
 
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setenv("LLM_PROVIDER", "anthropic")
-        # get_provider() reads the module-level `settings`; swap it for one
-        # that resolves to a provider whose key is genuinely absent, so the
-        # try/except degrade-to-stub path actually runs.
+        # An explicitly selected provider must fail visibly if unavailable.
         monkeypatch.setattr(llm_module, "settings", Settings())
         llm_module.set_provider(None)
         try:
-            provider = llm_module.get_provider()
-            assert provider.name == "stub"
-            assert "unavailable" in capsys.readouterr().out
+            with pytest.raises(LLMError, match="Configured provider 'anthropic' is unavailable"):
+                llm_module.get_provider()
         finally:
             llm_module.set_provider(None)
 

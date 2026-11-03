@@ -245,9 +245,13 @@ class StateManager:
     def list_runs(self, limit: int = 50) -> List[Dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute(
+                # rowid last, not run_id: two runs created within the same
+                # clock tick tie on both timestamps, and falling back to the
+                # id sorts them alphabetically -- which has nothing to do with
+                # which is newer. Insertion order does.
                 "SELECT run_id, description, status, created_at, updated_at "
                 "FROM runs WHERE tenant_id = ? "
-                "ORDER BY updated_at DESC, created_at DESC, run_id DESC LIMIT ?",
+                "ORDER BY updated_at DESC, created_at DESC, rowid DESC LIMIT ?",
                 (current_tenant(), limit),
             ).fetchall()
         return [dict(r) for r in rows]

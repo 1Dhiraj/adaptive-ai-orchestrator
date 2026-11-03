@@ -2,6 +2,7 @@
 google-genai>=1.0
 requests>=2.31
 boto3>=1.42,<2
+reportlab>=4.0,<5
 SQLAlchemy>=2.0,<3
 alembic>=1.13
 psycopg[binary]>=3.1
@@ -22,6 +23,11 @@ websockets>=12.0
 # Real MCP servers as agent tools (python -m orchestrator.cli mcp)
 # Optional: imported lazily, everything else works without it.
 mcp>=1.9
+
+# Native desktop control (computer_use's desktop backend, Windows only).
+# Optional: imported lazily, so everything else works without them.
+pywin32>=306; sys_platform == "win32"
+Pillow>=10.0
 
 # Benchmark baselines (python -m orchestrator.cli bench)
 langgraph>=0.2

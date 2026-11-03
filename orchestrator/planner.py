@@ -58,8 +58,11 @@ Respond with ONLY valid JSON, no markdown fences and no commentary:
       "name": "Human readable name",
       "role": "must match one of the agents above",
       "description": "One or two sentences stating exactly what to produce.",
+      "output_type": "code | json | text",
+      "accepts": ["code", "json", "text"],
+      "assumes": ["requirement_fact_key"],
       "depends_on": ["id_of_prerequisite", ...],
-      "tool": "EXACT name from the tool list supplied below, or null",
+      "tool": "EXACT installed tool name, a missing capability name, or null for work that needs no tool",
       "condition": {"source":"earlier_task_id or trigger.field", "operator":"contains | not_contains | equals | not_equals | exists | truthy", "value":"comparison value"},
       "inputs": [
         {
@@ -74,6 +77,7 @@ Respond with ONLY valid JSON, no markdown fences and no commentary:
       ]
     }
   ],
+  "facts": [{"key": "database", "value": "MongoDB", "aliases": ["Mongo"], "owner": "task_id"}],
   "notes": ["assumptions or caveats worth surfacing to the operator"]
 }
 
@@ -82,6 +86,13 @@ yourself to generic software roles: a legal review task wants a
 "contract_analyst", a biology task wants a "molecular_biologist". Write each
 system_prompt so it states the expertise AND the concrete deliverable format.
 Reuse one agent across several tasks when the expertise is the same.
+
+FACTS - extract concrete, changeable requirements actually stated by the user.
+Do not invent values. Each fact has a unique key, current value, aliases for
+that value, and one owner task. Never include secrets or credentials. Declare
+assumes on every task directly depending on a fact, including hidden dependencies.
+Refer to facts by key in task descriptions instead of hard-coding their values.
+Use output_type and accepts to describe deliverables and compatible inputs.
 
 REQUIREMENTS - declare everything the work genuinely depends on:
   - "tool": one of the tools in the supplied catalogue, including workspace
@@ -119,32 +130,165 @@ Use type "secret" for credentials. At most 2 inputs per step, and most steps
 should have none at all.
 
 TASKS:
-- Between 3 and 8 tasks. Fewer, larger tasks beat many trivial ones.
+- Between 1 and 8 tasks. Use one task for one direct real-world action; use
+  several only when distinct outputs or true dependencies exist.
 - Every id in depends_on MUST be the id of another task in this list.
 - The graph must be acyclic.
 - Put tasks that could run at the same time at the same dependency depth --
   do NOT chain everything into a single line unless it truly is sequential.
-- "tool" must name something declared in requirements.
+- "tool" must name something declared in requirements. If the capability is
+  missing, keep its name and declare a non-optional tool requirement. The
+  system can discover an integration; never replace actual execution with prose.
+- Prefer an installed API, then a browser tool, then desktop automation. A
+  browser or desktop action may need account sign-in and explicit permission.
+- Sending email is real work: preserve the supplied recipient, draft the
+  content yourself, and require approval for the exact message before sending.
+  Make it ONE adaptive_email task. That tool owns opening Gmail, sign-in,
+  drafting, review and sending; never add a separate computer_use/login step.
+- A simple browser or desktop instruction is ONE computer_use task. Put the
+  target sites/apps and concrete actions in its description; do not add
+  separate planning or verification prose steps unless they produce a real
+  deliverable. computer_use reads the page or the window after each action and
+  works out the next one itself, so a task whose steps cannot be known until
+  something is on screen -- a search whose results must be read, a login, a
+  consent banner, a multi-page form -- is still ONE task. Say what the task
+  must achieve, not the clicks you imagine it will take.
+- A requested file is a real deliverable. If the person asks for a PDF, the
+  final task must use artifact_store with an artifacts/*.pdf path and depend
+  on every step whose output belongs in the document. Opening/searching a
+  browser is not completion until that PDF exists.
 - Descriptions state the deliverable, not the process.
 - Use condition only for a real branch. Its source must be a dependency's id
   or trigger.field for webhook data. Omit condition for normal tasks.
-- For software projects, steps that create or edit code should use workspace;
-  build/test commands should be separate terminal steps. Use github only when
-  the request actually asks to publish or modify a remote repository.
+- For software projects, prefer codex_agent when it is available. It runs the
+  signed-in Codex agent's file-editing and command loop in the run workspace,
+  so one implementation step can create code, test it, and report real files.
+  Use workspace and terminal for smaller independent file or command steps,
+  or when codex_agent is unavailable. Use github only when the request actually
+  asks to publish or modify a remote repository.
 """
 
 
 SOFTWARE_TASK_PATTERN = re.compile(
     r"\b(?:web|mobile|desktop)\s+app(?:lication)?\b|\bwebsite\b|\bsoftware\b|"
+    r"\b(?:html|css|javascript|typescript)\s+(?:page|site|website|app|file)\b|"
+    r"\b(?:create|build|make)\b.{0,45}\b(?:html|webpage)\b|\.html?\b|"
     r"\b(?:frontend|backend|full[ -]?stack|api|microservice|codebase)\b|"
-    r"\b(?:build|develop|implement|create)\b.{0,35}\b(?:app|system|platform|portal|dashboard)\b",
+    r"\b(?:build|develop|implement|create|write)\b.{0,50}\b"
+    r"(?:app|application|system|platform|portal|dashboard|cli|command[ -]?line|"
+    r"script|program|package|library|"
+    # Ordinary names for software that say nothing about being software.
+    # Missing these does not merely misclassify: the coding tools are never
+    # attached, so every step that needed to write a file dies with
+    # "workspace: not registered" after the plan has already been paid for.
+    r"manager|tracker|service|micro-?service|bot|chat-?bot|site|server|"
+    r"editor|scraper|crawler|pipeline|tool|shortener|engine|queue|parser|"
+    r"converter|clone|game|extension|plugin|widget)\b|"
+    r"\b(?:python|javascript|typescript|java|rust|golang|c\+\+)\b.{0,45}\b"
+    r"(?:cli|command[ -]?line|script|program|tool|app|application)\b",
     re.IGNORECASE,
 )
+
+
+
+def _interface_kind(description: str) -> str:
+    """"web", "desktop", or "" when the description does not say.
+
+    Used only to keep a browser step and a desktop step from being merged into
+    one: a single ``computer_use`` call picks one backend, so a merged step
+    would silently drop half of what it was asked to do.
+    """
+    from .tools.computer_use import _looks_like_web_target, _target_from_description
+
+    target = _target_from_description(description or "")
+    if not target:
+        return ""
+    return "web" if _looks_like_web_target(target) else "desktop"
+
+
+def merge_interface_chains(steps: List[Step], repairs: List[str]) -> List[Step]:
+    """Collapse a chain of ``computer_use`` steps into the first of them.
+
+    Browser and desktop state does not survive a step boundary. Every
+    ``computer_use`` step opens its own page or raises its own window, so a
+    plan that splits one interface task into "navigate to the page" then
+    "select the option" does not merely waste a model call -- the second step
+    re-navigates, and everything the first step did (what was typed, which tab
+    was open, how far it had scrolled, whether it had signed in) is gone before
+    the second one starts.
+
+    Planner prompts ask for one task per interface instruction, and models
+    comply most of the time. This makes it structural rather than requested:
+    a chain that would have thrown away its own progress is welded back into
+    a single step, whose loop then carries one live session throughout.
+
+    Only a genuine chain is merged -- B depends on A alone, nothing else
+    depends on A, neither asks the operator anything, neither is conditional,
+    and both drive the same kind of interface.
+    """
+    merged = True
+    while merged:
+        merged = False
+        dependents: Dict[str, List[Step]] = {}
+        for step in steps:
+            for dependency in step.depends_on:
+                dependents.setdefault(dependency, []).append(step)
+        by_id = {step.id: step for step in steps}
+
+        for first in list(steps):
+            if first.requires_tool != "computer_use" or first.condition:
+                continue
+            followers = dependents.get(first.id, [])
+            if len(followers) != 1:
+                continue
+            second = followers[0]
+            if (second.requires_tool != "computer_use"
+                    or second.depends_on != [first.id]
+                    or second.condition or second.inputs or first.inputs):
+                continue
+            kinds = {_interface_kind(first.description),
+                     _interface_kind(second.description)} - {""}
+            if len(kinds) > 1:
+                continue
+            if len(first.description) + len(second.description) > 900:
+                continue
+
+            first.description = f"{first.description.rstrip('. ')}. Then: {second.description}"
+            if second.output_type and second.output_type != "text":
+                first.output_type = second.output_type
+            first.assumes = list(dict.fromkeys(
+                list(first.assumes) + list(second.assumes)))
+            for other in steps:
+                if other is second:
+                    continue
+                if second.id in other.depends_on:
+                    other.depends_on = list(dict.fromkeys([
+                        first.id if d == second.id else d for d in other.depends_on]))
+            steps = [step for step in steps if step.id is not second.id]
+            repairs.append(
+                f"merged '{second.id}' into '{first.id}': a browser/desktop "
+                "session does not survive a step boundary, so splitting them "
+                "would have re-opened the page and lost the first step's work")
+            merged = True
+            break
+    return steps
 
 
 def is_software_task(description: str) -> bool:
     """Conservative check used to attach opt-in coding tools before planning."""
     return bool(SOFTWARE_TASK_PATTERN.search(description or ""))
+
+
+def requires_action_tool(description: str) -> bool:
+    """A real app, site, or saved artifact cannot be completed by prose alone."""
+    text = description or ""
+    action = re.search(r"\b(open|launch|draw|type|click|save|create|write|build|make|edit|modify|run|scrape)\b",
+                       text, re.IGNORECASE)
+    target = re.search(
+        r"\b(paint|notepad|vscode|vs code|word|excel|powerpoint|browser|website|web app)\b"
+        r"|https?://|\b[\w.-]+\.(?:txt|md|html|css|js|py|pdf|png|jpg|docx|xlsx|pptx)\b",
+        text, re.IGNORECASE)
+    return bool(action and (target or is_software_task(text)))
 
 
 CLARIFIER_SYSTEM_PROMPT = """You are about to plan a task. First decide whether
@@ -278,9 +422,20 @@ _DELIVERABLE_PHRASES = re.compile(
     r"what (is|are) the (body|content|text|subject|wording))",
     re.IGNORECASE)
 
+# Tool readiness is checked from the real registry and converted into one
+# setup card when genuinely missing. A planner-generated input asking the
+# same question again is unreliable and redundant.
+_SETUP_INPUT_PHRASES = re.compile(
+    r"(?:have you (?:set up|configured|installed)|"
+    r"is .{0,60}(?:set up|configured|installed|available|ready)|"
+    r"(?:tool|package|binary|connection).{0,30}(?:available|ready))",
+    re.IGNORECASE,
+)
+
 #: Too many questions is its own failure: the operator ends up doing the work.
 MAX_INPUTS_PER_STEP = 2
 MAX_INPUTS_PER_WORKFLOW = 5
+MAX_PLAN_ATTEMPTS = 3
 
 
 def _is_deliverable_request(request: Any) -> bool:
@@ -292,6 +447,11 @@ def _is_deliverable_request(request: Any) -> bool:
     return bool(_DELIVERABLE_WORDS.search(request.name.replace("_", " ")))
 
 
+def _is_setup_request(request: Any) -> bool:
+    haystack = f"{request.name.replace('_', ' ')} {request.prompt}"
+    return bool(_SETUP_INPUT_PHRASES.search(haystack))
+
+
 def filter_inputs(requests: List[InputRequest],
                   limit: int = MAX_INPUTS_PER_STEP) -> List[InputRequest]:
     """Drop questions the agent should be answering itself, then cap the rest.
@@ -301,13 +461,61 @@ def filter_inputs(requests: List[InputRequest],
     workflow feel like an interrogation. Prompt wording alone does not stop
     it, so this is enforced in code.
     """
-    kept = [r for r in requests if not _is_deliverable_request(r)]
+    kept = [r for r in requests
+            if not _is_deliverable_request(r) and not _is_setup_request(r)]
     return kept[:limit]
 
 
 def _sanitise_id(raw: Any, index: int) -> str:
     text = re.sub(r"[^a-z0-9_]+", "_", str(raw or "").strip().lower()).strip("_")
     return text or f"step_{index + 1}"
+
+
+def _ensure_requested_artifacts(graph: DependencyGraph, description: str,
+                                repairs: List[str]) -> None:
+    """Make an explicitly requested PDF an enforceable final graph node."""
+    if not re.search(r"(?i)(?:\bpdf\b|\.pdf\b)", description or ""):
+        return
+
+    filename_match = re.search(r"(?i)\b([a-z0-9][a-z0-9_.-]{0,80}\.pdf)\b", description)
+    filename = filename_match.group(1) if filename_match else "report.pdf"
+    filename = re.sub(r"[^A-Za-z0-9_.-]+", "-", filename).strip(".-") or "report.pdf"
+    path = f"artifacts/{filename}"
+
+    existing = [step for step in graph if step.requires_tool == "artifact_store"]
+    instruction = (
+        f"Create the complete requested PDF at {path} from the prerequisite outputs. "
+        "Include the substantive results and any source URLs; do not replace them with "
+        "a progress note. The step is complete only when artifact_store confirms the "
+        "PDF file was written."
+    )
+    if existing:
+        step = existing[-1]
+        if ".pdf" not in step.description.lower():
+            step.description = f"{step.description.rstrip()} {instruction}"
+            repairs.append(f"step '{step.id}': enforced requested PDF artifact at {path}")
+        return
+
+    depended_on = {dependency for step in graph for dependency in step.depends_on}
+    leaves = [step_id for step_id in graph.topological_order() if step_id not in depended_on]
+    base_id = "create_pdf"
+    step_id = base_id
+    suffix = 2
+    while step_id in graph:
+        step_id = f"{base_id}_{suffix}"
+        suffix += 1
+    graph.add(Step(
+        id=step_id,
+        name="Create PDF artifact",
+        description=instruction,
+        agent_role="writer",
+        requires_tool="artifact_store",
+        depends_on=leaves,
+        output_type="text",
+        accepts=["code", "json", "text"],
+    ))
+    graph.validate()
+    repairs.append(f"added '{step_id}' because the request requires a real PDF artifact")
 
 
 class TaskPlanner:
@@ -393,18 +601,51 @@ class TaskPlanner:
             catalogue = "\n".join(
                 f"- {t['name']}: {t['description']}" for t in tools.describe())
             if catalogue:
-                prompt += ("\n\nThe ONLY tools that exist are these. Use a name from "
-                           f"this list verbatim, or null. Never invent a tool name:\n{catalogue}")
+                prompt += ("\n\nInstalled tools (use their exact names). If none can do the work, "
+                           "declare a missing tool requirement and keep that capability on its step; "
+                           f"do not pretend it was executed:\n{catalogue}")
 
-        response = self.llm.generate(prompt, system=self.system_prompt, json_mode=True)
+        from .llm import provider_for_role
+        planner_provider = provider_for_role(self.llm, "planner")
+        response = planner_provider.generate(
+            prompt, system=self.system_prompt, json_mode=True)
+        total_usage = response.usage
         parsed = extract_json(response.text)
+        attempt = 1
 
-        used_fallback = False
+        # A malformed model response must never turn into an unrelated plan.
+        # Ask the same planner to repair its answer, preserving the original
+        # task and installed-tool catalogue. If it still cannot produce a
+        # usable task list, fail closed so the dashboard can offer a retry.
+        while (not parsed or not isinstance(parsed.get("tasks"), list)
+               or not parsed["tasks"]) and attempt < MAX_PLAN_ATTEMPTS:
+            reason = ("not a valid JSON object" if not parsed
+                      else "the 'tasks' array was missing or empty")
+            previous = (response.text or "(empty response)")[-12000:]
+            repair_prompt = (
+                f"{prompt}\n\n"
+                f"Your previous planning response was {reason}. Repair it and return "
+                "the complete plan again. It must follow the JSON schema in the system "
+                "message, contain a non-empty tasks array, use only capabilities the "
+                "task actually needs, and contain no prose or markdown fences.\n\n"
+                f"Previous response:\n{previous}"
+            )
+            response = planner_provider.generate(
+                repair_prompt, system=self.system_prompt, json_mode=True)
+            total_usage = total_usage + response.usage
+            parsed = extract_json(response.text)
+            attempt += 1
+
         if not parsed or not isinstance(parsed.get("tasks"), list) or not parsed["tasks"]:
-            parsed = self._fallback_plan(project_description)
-            used_fallback = True
+            raise PlanningError(
+                f"The AI planner did not return a valid task plan after "
+                f"{MAX_PLAN_ATTEMPTS} attempts. No fallback plan was created; retry the "
+                "request."
+            )
 
         repairs: List[str] = []
+        if attempt > 1:
+            repairs.append(f"AI planner repaired its response on attempt {attempt}")
         # Agents are parsed first so the graph can resolve step roles against
         # them -- otherwise a declared 'medical_writer' fuzzy-matches into the
         # built-in 'writer' and the specialist is silently lost.
@@ -414,9 +655,34 @@ class TaskPlanner:
         available = {t["name"] for t in tools.describe()} if tools is not None else None
         graph, graph_repairs = self.build_graph(parsed["tasks"], declared_roles, available)
         repairs.extend(graph_repairs)
-        if used_fallback:
-            repairs.insert(0, "planner response was unusable; applied a generic fallback plan")
+        _ensure_requested_artifacts(graph, project_description, repairs)
+        if requires_action_tool(project_description) and not any(
+                step.requires_tool for step in graph.steps.values()):
+            raise PlanningError(
+                "The AI returned a plan with no action tool for a task that must use an app, "
+                "website, or file. Nothing was started; retry after checking the model and tools.")
+        from .change_aware import FactStore, check_plan
+        from .config import settings
 
+        raw_facts = parsed.get("facts") or []
+        normalised_facts = []
+        for raw_fact in raw_facts:
+            fact = raw_fact
+            if isinstance(raw_fact, dict):
+                value = raw_fact.get("value")
+                if value is not None and not isinstance(value, str):
+                    fact = dict(raw_fact)
+                    fact["value"] = json.dumps(value, ensure_ascii=False)
+                    repairs.append(
+                        f"normalised fact '{raw_fact.get('key', '(unknown)')}' value to text"
+                    )
+            normalised_facts.append(fact)
+
+        try:
+            graph.facts = FactStore(normalised_facts)
+        except (TypeError, ValueError) as exc:
+            raise PlanningError(f"invalid requirement facts: {exc}") from exc
+        validation = check_plan(graph, settings.plan_token_budget)
         # Now that the graph exists, record which steps each specialist covers.
         for agent in agents:
             if not agent.handles:
@@ -431,6 +697,8 @@ class TaskPlanner:
             requirements=merge_requirements(declared, infer_requirements(graph)),
             agents=agents,
             notes=[str(n) for n in (parsed.get("notes") or []) if str(n).strip()],
+            plan_errors=validation["errors"],
+            estimated_tokens=validation["estimated_tokens"],
         )
         if tools is None:
             from .tools import default_tool_manager
@@ -440,10 +708,10 @@ class TaskPlanner:
 
         return PlanResult(
             graph=graph,
-            usage=response.usage,
+            usage=total_usage,
             repairs=repairs,
             raw_response=response.text,
-            used_fallback_plan=used_fallback,
+            used_fallback_plan=False,
             requirements=report,
         )
 
@@ -497,6 +765,15 @@ class TaskPlanner:
         canonical = canonical_tool_name(name)
         if not canonical:
             return None, None
+        if canonical in {"email", "gmail"} and available and "adaptive_email" in available:
+            return "adaptive_email", "email uses reviewed API/browser delivery"
+        if available and "computer_use" in available and (
+                canonical in {"desktop_native", "hermes_desktop", "desktop_automation"}
+                or canonical.startswith("web_browser_")
+                or canonical.startswith("browser_")):
+            return "computer_use", (
+                f"low-level tool '{canonical}' cannot complete a multi-action goal; "
+                "using guarded computer_use instead")
         if available is None or canonical in available:
             return canonical, None
 
@@ -513,8 +790,8 @@ class TaskPlanner:
             best = sorted(candidates, key=lambda r: (-len(set(r) & set(canonical)), len(r)))[0]
             return best, f"tool '{canonical}' does not exist; using '{best}' instead"
 
-        return None, (f"tool '{canonical}' does not exist and nothing similar is "
-                      "registered; the step will run without a tool")
+        return canonical, (f"tool '{canonical}' does not exist; discover and connect "
+                           "the missing capability before execution")
 
     @staticmethod
     def build_graph(tasks: List[Dict[str, Any]],
@@ -584,10 +861,46 @@ class TaskPlanner:
                 requires_tool=tool,
                 inputs=filter_inputs(parse_declared_inputs(task.get("inputs"))),
                 condition=condition,
+                output_type=str(task.get("output_type", "text")),
+                accepts=task.get("accepts", ["code", "json", "text"]),
+                assumes=task.get("assumes", []),
             ))
 
         if not steps:
             raise PlanningError("planner produced no usable tasks")
+
+        # adaptive_email owns its browser lifecycle. Models sometimes insert
+        # a separate "open Gmail/login" computer_use step; that wastes a full
+        # model call and, worse, opens a different browser session from the
+        # reviewed draft. Remove only those clearly mail-specific precursors,
+        # preserving genuine browser research that may feed the message.
+        mail_browser = {
+            step.id for step in steps
+            if step.requires_tool == "computer_use"
+            and re.search(
+                r"(?i)(?:gmail|mail\.google|email).{0,50}(?:login|sign[ -]?in|browser|prepare)|"
+                r"(?:login|sign[ -]?in|browser|prepare).{0,50}(?:gmail|mail\.google|email)",
+                step.description,
+            )
+        }
+        if mail_browser and any(step.requires_tool == "adaptive_email" for step in steps):
+            by_id = {step.id: step for step in steps}
+            for step in steps:
+                if step.id in mail_browser:
+                    continue
+                rewritten: List[str] = []
+                for dependency in step.depends_on:
+                    if dependency in mail_browser:
+                        rewritten.extend(by_id[dependency].depends_on)
+                    else:
+                        rewritten.append(dependency)
+                step.depends_on = list(dict.fromkeys(rewritten))
+            for step_id in sorted(mail_browser):
+                repairs.append(
+                    f"dropped redundant mail-browser step '{step_id}'; adaptive_email owns Gmail")
+            steps = [step for step in steps if step.id not in mail_browser]
+
+        steps = merge_interface_chains(steps, repairs)
 
         # Cap questions across the whole workflow, keeping the earliest steps'
         # (they block the most). Being asked eight things up front reads as an
@@ -633,34 +946,6 @@ class TaskPlanner:
         )
         revised = response.text.strip()
         return revised or f"{step.description} (updated: {new_requirement})"
-
-    # -- fallback ----------------------------------------------------------
-
-    @staticmethod
-    def _fallback_plan(description: str) -> Dict[str, Any]:
-        """A generic software-delivery DAG, used when the LLM output is unusable."""
-        topic = (description or "the project").strip().rstrip(".")
-        return {"notes": [
-            "The planner's response could not be parsed, so a generic "
-            "software-delivery plan was substituted. Review it before running."
-        ], "tasks": [
-            {"id": "requirements", "role": "research", "name": "Clarify Requirements",
-             "description": f"Clarify scope, constraints and success criteria for: {topic}.",
-             "depends_on": [], "tool": None},
-            {"id": "database", "role": "database", "name": "Design Schema",
-             "description": f"Design the data model and migrations for: {topic}.",
-             "depends_on": ["requirements"], "tool": "postgres"},
-            {"id": "backend", "role": "backend", "name": "Build API",
-             "description": f"Implement the API and business logic for: {topic}.",
-             "depends_on": ["database"], "tool": "github"},
-            {"id": "frontend", "role": "frontend", "name": "Build UI",
-             "description": f"Build the user interface for: {topic}.",
-             "depends_on": ["requirements"], "tool": None},
-            {"id": "testing", "role": "testing", "name": "Integration Tests",
-             "description": f"Write and run integration tests covering: {topic}.",
-             "depends_on": ["backend", "frontend"], "tool": "ci"},
-        ]}
-
 
 def plan_from_json(path: str) -> DependencyGraph:
     """Load a hand-written plan from a JSON file.

@@ -7,6 +7,7 @@ requiring python-dotenv (falls back to a tiny parser).
 from __future__ import annotations
 
 import os
+import json
 import shutil
 import sys
 from dataclasses import dataclass, field
@@ -53,6 +54,50 @@ def _load_env_files() -> None:
 
 _load_env_files()
 
+MODEL_PREFERENCE_KEYS = {
+    "LLM_PROVIDER", "GEMINI_MODEL", "ANTHROPIC_MODEL", "OPENAI_MODEL",
+    "NVIDIA_MODEL", "OLLAMA_MODEL", "CODEX_MODEL",
+}
+
+
+def model_preferences_path() -> Path:
+    return default_data_dir() / "model_preferences.json"
+
+
+def _load_model_preferences() -> None:
+    """Apply the user's dashboard model choice without storing any secret."""
+    path = model_preferences_path()
+    try:
+        values = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return
+    if isinstance(values, dict):
+        for key, value in values.items():
+            if key in MODEL_PREFERENCE_KEYS and isinstance(value, str) and value.strip():
+                os.environ[key] = value.strip()
+
+
+def save_model_preference(provider: str, model: str) -> Path:
+    """Persist a non-secret provider/model selection for future launches."""
+    provider = provider.strip().lower()
+    model = model.strip()
+    model_keys = {
+        "gemini": "GEMINI_MODEL", "anthropic": "ANTHROPIC_MODEL",
+        "openai": "OPENAI_MODEL", "nvidia": "NVIDIA_MODEL",
+        "ollama": "OLLAMA_MODEL", "codex": "CODEX_MODEL",
+    }
+    if provider not in model_keys or not model:
+        raise ValueError("Choose a supported provider and model")
+    values = {"LLM_PROVIDER": provider, model_keys[provider]: model}
+    path = model_preferences_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(values, indent=2), encoding="utf-8")
+    os.environ.update(values)
+    return path
+
+
+_load_model_preferences()
+
 
 def _flag(name: str, default: bool = False) -> bool:
     raw = os.environ.get(name)
@@ -83,6 +128,9 @@ class Settings:
     openai_base_url: str = field(
         default_factory=lambda: os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"))
 
+    #: Uses the locally signed-in Codex CLI / ChatGPT plan, not OPENAI_API_KEY.
+    codex_model: str = field(default_factory=lambda: os.environ.get("CODEX_MODEL", "gpt-6.1-sol"))
+
     #: NVIDIA NIM: OpenAI-compatible, 100+ hosted open models, free tier.
     nvidia_api_key: Optional[str] = field(default_factory=lambda: os.environ.get("NVIDIA_API_KEY"))
     #: Current NVIDIA-hosted general instruction model.
@@ -100,12 +148,17 @@ class Settings:
         default_factory=lambda: os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"))
     ollama_model: str = field(default_factory=lambda: os.environ.get("OLLAMA_MODEL", "llama3.1"))
 
-    #: Explicit override: "gemini" | "anthropic" | "openai" | "ollama" | "stub".
+    #: Explicit override: "gemini" | "anthropic" | "codex" | "openai" | "ollama" | "stub".
     #: Unset -> auto-detect from whichever API key is present (see
     #: resolve_provider()).
     llm_provider: Optional[str] = field(
         default_factory=lambda: (os.environ.get("LLM_PROVIDER") or "").strip().lower() or None)
 
+    #: Ceiling on completion tokens per call. Gateways that bill against a
+    #: credit limit reserve the model's full context when this is unset, which
+    #: fails a one-line request on a small balance. 0 disables the cap.
+    llm_max_output_tokens: int = field(
+        default_factory=lambda: _int("LLM_MAX_OUTPUT_TOKENS", 4096))
     llm_max_retries: int = field(default_factory=lambda: _int("LLM_MAX_RETRIES", 3))
     llm_timeout_s: float = field(default_factory=lambda: float(os.environ.get("LLM_TIMEOUT_S", 120)))
     #: Force the deterministic offline provider even when a key is present.
@@ -113,6 +166,11 @@ class Settings:
 
     # -- orchestration ----------------------------------------------------
     max_workers: int = field(default_factory=lambda: _int("ORCHESTRATOR_MAX_WORKERS", 4))
+    change_aware: bool = field(default_factory=lambda: _flag("ORCHESTRATOR_CHANGE_AWARE", True))
+    semantic_cutoff: bool = field(default_factory=lambda: _flag("ORCHESTRATOR_SEMANTIC_CUTOFF", False))
+    equivalence_threshold: float = field(default_factory=lambda: float(
+        os.environ.get("ORCHESTRATOR_EQUIVALENCE_THRESHOLD", "0.95")))
+    plan_token_budget: int = field(default_factory=lambda: _int("ORCHESTRATOR_PLAN_TOKEN_BUDGET", 20000))
     #: Per-dependency character budget when assembling shared context.
     context_char_budget: int = field(default_factory=lambda: _int("ORCHESTRATOR_CONTEXT_BUDGET", 1200))
 
@@ -132,8 +190,8 @@ class Settings:
     def resolve_provider(self) -> str:
         """Which provider ``get_provider()`` will build.
 
-        Precedence: forced stub > explicit LLM_PROVIDER > first API key found
-        (gemini, then anthropic, then openai) > stub. Ollama is deliberately
+        Precedence: forced stub > explicit LLM_PROVIDER > NVIDIA key > stub.
+        Other providers remain available through an explicit selection. Ollama is deliberately
         never auto-selected -- it needs no key, so key-presence can't detect
         it, and guessing a local server is running (and blocking on a
         connection attempt) would surprise a user who has no intention of
@@ -143,12 +201,6 @@ class Settings:
             return "stub"
         if self.llm_provider:
             return self.llm_provider
-        if self.gemini_api_key:
-            return "gemini"
-        if self.anthropic_api_key:
-            return "anthropic"
-        if self.openai_api_key:
-            return "openai"
         if self.nvidia_api_key:
             return "nvidia"
         return "stub"
@@ -163,11 +215,22 @@ class Settings:
         model = {
             "gemini": self.gemini_model, "anthropic": self.anthropic_model,
             "openai": self.openai_model, "ollama": self.ollama_model,
-            "nvidia": self.nvidia_model,
+            "nvidia": self.nvidia_model, "codex": self.codex_model,
         }.get(provider, "stub")
+        # The host the calls go to, with no credential in it. Provider alone
+        # cannot answer "am I on GPT or DeepSeek right now": both are reached
+        # through the openai-compatible path, so both report "openai" and the
+        # dashboard showed the same thing either way.
+        endpoint = ""
+        if provider == "openai":
+            endpoint = (self.openai_base_url or "").replace("https://", "").replace(
+                "http://", "").rstrip("/").removesuffix("/v1")
+        elif provider == "ollama":
+            endpoint = (self.ollama_base_url or "").replace("http://", "")
         return {
             "llm_mode": provider if provider != "stub" else "stub (deterministic, offline)",
             "model": model,
+            "endpoint": endpoint,
             "max_workers": self.max_workers,
             "db_path": self.db_path,
             "live_tools": [

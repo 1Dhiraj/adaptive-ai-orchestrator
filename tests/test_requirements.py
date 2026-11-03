@@ -92,6 +92,12 @@ class TestRequirementChecking:
         req = check_requirement(Requirement(name="artifact_store", kind=RequirementKind.TOOL), tools)
         assert req.status is RequirementStatus.READY
 
+    def test_registered_tool_mislabelled_as_binary_uses_registry(self, tools):
+        req = check_requirement(
+            Requirement(name="artifact_store", kind=RequirementKind.BINARY), tools)
+        assert req.status is RequirementStatus.READY
+        assert req.detail == "configured and live"
+
     def test_broken_tool_with_a_working_fallback_is_degraded_not_blocked(self, tools):
         """A broken github still runs via github_cli, so it must not block."""
         tools.break_tool("github")
@@ -124,6 +130,12 @@ class TestRequirementChecking:
         req = check_requirement(Requirement(name="definitely_not_a_package_xyz",
                                             kind=RequirementKind.PACKAGE))
         assert req.status is RequirementStatus.MISSING
+
+    def test_runtime_declared_as_package_is_normalised_to_binary(self):
+        req = Requirement.from_dict({"name": "python", "kind": "package"})
+        assert req.kind is RequirementKind.BINARY
+        check_requirement(req)
+        assert req.status is RequirementStatus.READY
 
     def test_binary_on_path_is_ready(self):
         req = check_requirement(Requirement(name="python", kind=RequirementKind.BINARY))

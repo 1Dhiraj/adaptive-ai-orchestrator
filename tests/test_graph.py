@@ -140,3 +140,60 @@ class TestSerialisation:
     def test_mermaid_contains_every_edge(self, diamond_graph):
         mermaid = diamond_graph.to_mermaid()
         assert "a --> b" in mermaid and "b --> d" in mermaid
+
+
+class TestResolvingAStepId:
+    """Step ids are invented by the planner, so nobody knows them in advance.
+
+    A plan about a database calls its step 'database_schema' this run and
+    'schema_design' the next, so 'change the database step' has to survive a
+    near miss -- and when it genuinely cannot, it has to say what the choices
+    were instead of raising a bare KeyError.
+    """
+
+    def graph(self):
+        from orchestrator.graph import DependencyGraph
+        from orchestrator.models import Step
+
+        return DependencyGraph([
+            Step(id="database_schema", name="db", description="d",
+                 agent_role="database"),
+            Step(id="api_contract", name="api", description="d",
+                 agent_role="backend"),
+            Step(id="frontend_implementation", name="fe", description="d",
+                 agent_role="frontend"),
+        ])
+
+    def test_an_exact_id_is_returned_unchanged(self):
+        assert self.graph().resolve_id("api_contract") == "api_contract"
+
+    def test_a_prefix_is_enough_when_it_is_unique(self):
+        assert self.graph().resolve_id("database") == "database_schema"
+
+    def test_a_substring_is_enough_when_it_is_unique(self):
+        assert self.graph().resolve_id("contract") == "api_contract"
+
+    def test_case_does_not_matter(self):
+        assert self.graph().resolve_id("API_Contract") == "api_contract"
+
+    def test_an_ambiguous_fragment_names_the_candidates(self):
+        from orchestrator.graph import DependencyGraph
+        from orchestrator.models import Step
+        import pytest
+
+        graph = DependencyGraph([
+            Step(id="api_contract", name="a", description="d", agent_role="backend"),
+            Step(id="api_tests", name="b", description="d", agent_role="testing"),
+        ])
+        with pytest.raises(KeyError) as caught:
+            graph.resolve_id("api")
+        assert "api_contract" in str(caught.value)
+        assert "api_tests" in str(caught.value)
+
+    def test_an_unknown_id_lists_what_the_run_actually_has(self):
+        import pytest
+
+        with pytest.raises(KeyError) as caught:
+            self.graph().resolve_id("nonsense")
+        message = str(caught.value)
+        assert "database_schema" in message and "api_contract" in message

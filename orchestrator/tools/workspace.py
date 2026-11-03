@@ -30,6 +30,20 @@ from .builtin import _directive
 
 DEFAULT_WORKSPACE_ROOT = PROJECT_ROOT / "workspace"
 
+_WRITE_REQUEST = re.compile(
+    r"\b(create|write|save|edit|modify|update|change|shorten|rewrite|replace|append|fix|remove|delete|build)\b",
+    re.IGNORECASE,
+)
+_EDIT_REQUEST = re.compile(
+    r"\b(edit|modify|update|change|shorten|rewrite|replace|append|fix|remove|delete)\b",
+    re.IGNORECASE,
+)
+
+
+def workspace_requires_write(description: str) -> bool:
+    """Whether a workspace step must change a file before it can finish."""
+    return bool(_WRITE_REQUEST.search(description or ""))
+
 #: Commands refused outright. Matched on the first word of any statement in
 #: the command line, so `foo && sudo bar` is caught as well as plain `sudo`.
 BLOCKED_COMMANDS = {
@@ -76,6 +90,29 @@ def workspace_for(run_id: str, root: Optional[Path] = None) -> Path:
     path = (root or DEFAULT_WORKSPACE_ROOT) / safe_run
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+#: A filename mentioned in the step's own words: "save it as weather.html".
+_FILENAME = re.compile(
+    r"(?i)(?:save|write|create|call|name)[^.\n]{0,40}?"
+    r"\b([A-Za-z0-9_\-./]+\.[A-Za-z0-9]{1,6})\b")
+
+
+def _filename_from(task: str, context: Optional[dict]) -> str:
+    """The file this step was told to produce, from its own description."""
+    for haystack in (task or "", str((context or {}).get("step_description") or "")):
+        match = _FILENAME.search(haystack)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def _fenced_block(task: str) -> Optional[str]:
+    """The contents of the largest fenced code block, if there is one."""
+    blocks = re.findall(r"```[a-zA-Z0-9_+-]*\r?\n(.*?)```", task or "", re.S)
+    if not blocks:
+        return None
+    return max(blocks, key=len).strip() or None
 
 
 def _resolve_inside(workspace: Path, relative: str) -> Path:
@@ -202,25 +239,68 @@ class WorkspaceFileTool(Tool):
             raise WorkspaceError(
                 f"unknown workspace action '{action}'; use write, read or list")
 
-        path = _resolve_inside(self.workspace, directive.get("path", ""))
+        # Models name this field from the plan's own words -- "filename",
+        # "file", "file_path", "name". Refusing all but one spelling turns a
+        # correct plan into "no path given", which reads like the agent failed
+        # to decide rather than like a vocabulary mismatch.
+        requested = next(
+            (str(directive[key]) for key in
+             ("path", "file_path", "filename", "file", "name", "filepath")
+             if directive.get(key)), "")
+        if not requested:
+            # Models often hand a file over as a fenced code block and name it
+            # in the prose around it, rather than as a directive. That is a
+            # clear statement of intent, so honour it instead of throwing the
+            # work away over its packaging.
+            requested = _filename_from(task, context)
+        if not requested:
+            raise WorkspaceError(
+                "no path given: say where to write it, e.g. "
+                '{"action": "write", "path": "index.html", "content": "..."}. '
+                f"Received keys: {sorted(directive) or '(nothing)'}")
+        path = _resolve_inside(self.workspace, requested)
 
         if action == "read":
             if not path.is_file():
-                raise WorkspaceError(f"no such file: {directive.get('path')}")
+                raise WorkspaceError(f"no such file: {requested}")
             content = path.read_text(encoding="utf-8", errors="replace")
-            return f"[workspace] {directive['path']} ({len(content)} chars):\n{content[:4000]}"
+            return (f"[workspace] {requested} ({len(content)} chars; "
+                    f"absolute path: {path}):\n{content[:4000]}")
 
         if action == "write":
             content = directive.get("content")
+            if content is None:
+                fenced = _fenced_block(task)
+                if fenced is not None:
+                    content = fenced
             if content is None:
                 # No explicit content: fall back to the agent's own output,
                 # minus the directive line, so a plain "write this file" works.
                 content = re.sub(r"TOOL_DIRECTIVE:.*$", "", task,
                                  flags=re.MULTILINE | re.DOTALL).strip()
+            description = str((context or {}).get("step_description") or "")
+            if path.is_file() and _EDIT_REQUEST.search(description):
+                before = path.read_text(encoding="utf-8", errors="replace").strip()
+                after = str(content).strip()
+                if before == after:
+                    raise WorkspaceError(f"file unchanged after edit request: {requested}")
+                if re.search(r"\bshorten\b", description, re.IGNORECASE):
+                    ordinal = re.search(r"\b(first|second|third|fourth|fifth)\s+(?:tip|line|item)\b",
+                                        description, re.IGNORECASE)
+                    if ordinal:
+                        index = {"first": 0, "second": 1, "third": 2,
+                                 "fourth": 3, "fifth": 4}[ordinal.group(1).lower()]
+                        old_lines, new_lines = before.splitlines(), after.splitlines()
+                        if (len(old_lines) > index and len(new_lines) > index
+                                and len(new_lines[index].strip()) >= len(old_lines[index].strip())):
+                            raise WorkspaceError(
+                                f"requested {ordinal.group(1)} item is not shorter: {requested}")
+                    elif len(after) >= len(before):
+                        raise WorkspaceError(f"updated file is not shorter: {requested}")
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(str(content), encoding="utf-8")
             return (f"[workspace] wrote {path.relative_to(self.workspace)} "
-                    f"({len(str(content))} chars)")
+                    f"({len(str(content))} chars); absolute path: {path}")
 
 
 
@@ -297,4 +377,7 @@ class TerminalTool(Tool):
 
 def coding_team_tools(run_id: str = "default", root: Optional[Path] = None) -> List[Tool]:
     """The tools a team of agents needs to actually build and test software."""
-    return [WorkspaceFileTool(run_id, root), TerminalTool(run_id, root)]
+    from .codex_agent import CodexAgentTool
+
+    return [WorkspaceFileTool(run_id, root), TerminalTool(run_id, root),
+            CodexAgentTool(run_id, root)]

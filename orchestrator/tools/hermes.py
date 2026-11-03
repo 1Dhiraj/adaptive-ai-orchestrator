@@ -48,6 +48,15 @@ class HermesDesktopTool(Tool):
     def is_live(self) -> bool:
         return _enabled() and self._binary() is not None
 
+    def availability_detail(self) -> str:
+        if self.is_broken:
+            return "marked broken"
+        if not _enabled():
+            return "optional Hermes backend disabled; guarded native desktop may still be used"
+        if self._binary() is None:
+            return "optional Hermes executable not found; guarded native desktop is the fallback"
+        return "Hermes executable found and desktop automation enabled"
+
     def prompt_hint(self) -> str:
         return (
             "Delegate a complete desktop outcome to Hermes. Describe the desired "

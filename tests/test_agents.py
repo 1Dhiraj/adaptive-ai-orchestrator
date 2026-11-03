@@ -18,7 +18,7 @@ from orchestrator.llm import (
 from orchestrator.memory import MemoryManager, truncate
 from orchestrator.models import LLMUsage, Step, content_hash
 from orchestrator.tools import ToolManager, default_tool_manager
-from orchestrator.tools.base import SimulatedTool
+from orchestrator.tools.base import SimulatedTool, ToolInvocation
 
 
 class TestRoleNormalisation:
@@ -74,6 +74,7 @@ class TestAgent:
         assert outcome.tool_invocation is not None
         assert "Tool `github`" in outcome.output
         assert outcome.output.startswith("[backend]")  # the agent's own work survives
+        assert "TOOL_DIRECTIVE" not in outcome.output
 
     def test_fallback_is_labelled_in_the_output(self, stub_llm):
         tools = default_tool_manager()
@@ -81,6 +82,18 @@ class TestAgent:
         agent = Agent("backend", llm=stub_llm)
         step = Step(id="a", description="x", agent_role="backend", requires_tool="github")
         assert "FALLBACK" in agent.execute(step, "", tools).output
+
+    def test_computer_use_result_hides_model_tool_reasoning(self):
+        invocation = ToolInvocation(
+            requested="computer_use", tool_used="computer_use", ok=True,
+            simulated=False, output="opened Notepad and typed 5 characters")
+
+        merged = Agent.merge_tool_result(
+            "We need to output a tool directive, but the response was cut off.",
+            "computer_use", invocation)
+
+        assert merged == (
+            "Tool `computer_use`: opened Notepad and typed 5 characters")
 
     def test_role_specific_output_from_the_stub(self, stub_llm):
         step = Step(id="db", description="Design the schema", agent_role="database")
@@ -163,6 +176,17 @@ class TestMemory:
     def test_missing_dependency_is_marked(self):
         step = Step(id="c", description="x", agent_role="generic", depends_on=["a"])
         assert "not yet produced" in MemoryManager().build_context(step)
+
+    def test_context_budget_can_be_expanded_for_exact_artifacts(self):
+        memory = MemoryManager(char_budget=20)
+        original = "complete report " * 40
+        memory.store("writer", original)
+        step = Step(id="store", description="archive", agent_role="writer",
+                    depends_on=["writer"], requires_tool="artifact_store")
+        ordinary = memory.build_context(step)
+        expanded = memory.build_context(step, char_budget=2000)
+        assert "chars elided" in ordinary
+        assert original in expanded
 
     def test_input_hash_changes_with_upstream_output(self):
         memory = MemoryManager()

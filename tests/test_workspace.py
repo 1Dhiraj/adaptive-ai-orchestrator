@@ -13,6 +13,10 @@ from pathlib import Path
 import pytest
 
 from orchestrator.models import Step
+from orchestrator.agents import Agent
+from orchestrator.llm import LLMProvider, LLMResponse
+from orchestrator.models import LLMUsage
+from orchestrator.tools.base import ToolManager
 from orchestrator.tools.workspace import (
     BLOCKED_COMMANDS,
     TerminalTool,
@@ -141,9 +145,80 @@ class TestSecretStripping:
 
 
 class TestWorkspaceFileTool:
+    def test_edit_step_reads_then_writes_and_changes_the_file(self, ws_root):
+        class ReadThenWrite(LLMProvider):
+            model = "scripted"
+
+            def __init__(self):
+                super().__init__()
+                self.calls = 0
+
+            def _generate(self, prompt, system, json_mode, metadata):
+                self.calls += 1
+                directive_text = (directive(action="read", path="demo-note.txt")
+                                  if self.calls == 1 else
+                                  directive(action="write", path="demo-note.txt",
+                                            content="1. Focus.\n2. Silence your phone.\n3. Take breaks."))
+                return LLMResponse(directive_text, LLMUsage(calls=1), self.model, 0.0)
+
+        provider = ReadThenWrite()
+        tool = WorkspaceFileTool("r1", ws_root)
+        (tool.workspace / "demo-note.txt").write_text(
+            "1. Focus.\n2. Silence notifications and put your phone away.\n3. Take breaks.",
+            encoding="utf-8")
+        step = Step(id="edit_note", agent_role="writer", requires_tool="workspace",
+                    description="Read demo-note.txt, shorten the second tip, and save the updated file.")
+        outcome = Agent("writer", llm=provider).execute(step, "", ToolManager([tool]))
+
+        assert provider.calls == 2
+        assert "[workspace] wrote demo-note.txt" in outcome.output
+        assert "2. Silence your phone." in (tool.workspace / "demo-note.txt").read_text(encoding="utf-8")
+
+    def test_edit_step_rejects_unchanged_content(self, ws_root):
+        tool = WorkspaceFileTool("r1", ws_root)
+        (tool.workspace / "demo-note.txt").write_text("same", encoding="utf-8")
+        with pytest.raises(WorkspaceError, match="unchanged"):
+            tool.execute(directive(action="write", path="demo-note.txt", content="same"),
+                         {"step_description": "Edit the note and save it"})
+
+    def test_shortening_step_retries_when_first_edit_is_not_shorter(self, ws_root):
+        class Scripted(LLMProvider):
+            model = "scripted"
+
+            def __init__(self):
+                super().__init__()
+                self.calls = 0
+
+            def _generate(self, prompt, system, json_mode, metadata):
+                self.calls += 1
+                if self.calls == 1:
+                    payload = directive(action="read", path="demo-note.txt")
+                elif self.calls == 2:
+                    payload = directive(action="write", path="demo-note.txt",
+                                        content="1. Focus.\n2. Mute every notification and move your phone out of reach before you start.\n3. Rest.")
+                else:
+                    assert "not shorter" in prompt
+                    payload = directive(action="write", path="demo-note.txt",
+                                        content="1. Focus.\n2. Mute your phone.\n3. Rest.")
+                return LLMResponse(payload, LLMUsage(calls=1), self.model, 0.0)
+
+        provider = Scripted()
+        tool = WorkspaceFileTool("r2", ws_root)
+        (tool.workspace / "demo-note.txt").write_text(
+            "1. Focus.\n2. Silence notifications and put your phone away.\n3. Rest.",
+            encoding="utf-8")
+        step = Step(id="edit_note", agent_role="writer", requires_tool="workspace",
+                    description="Shorten the second tip in demo-note.txt and save it.")
+
+        Agent("writer", llm=provider).execute(step, "", ToolManager([tool]))
+
+        assert provider.calls == 3
+        assert "2. Mute your phone." in (tool.workspace / "demo-note.txt").read_text(encoding="utf-8")
+
     def test_write_then_read_round_trip(self, ws_root):
         tool = WorkspaceFileTool("r1", ws_root)
-        tool.execute(directive(action="write", path="a.txt", content="hello"))
+        written = tool.execute(directive(action="write", path="a.txt", content="hello"))
+        assert str((tool.workspace / "a.txt").resolve()) in written
         assert "hello" in tool.execute(directive(action="read", path="a.txt"))
 
     def test_write_creates_nested_directories(self, ws_root):
@@ -269,8 +344,8 @@ class TestTerminalTool:
 class TestCodingTeam:
     def test_enable_registers_both_tools(self, make_workflow, tmp_path):
         workflow = make_workflow([Step(id="a", description="x", agent_role="backend")])
-        assert set(workflow.enable_coding_team(tmp_path)) == {"workspace", "terminal"}
-        assert "workspace" in workflow.tools and "terminal" in workflow.tools
+        assert set(workflow.enable_coding_team(tmp_path)) == {"workspace", "terminal", "codex_agent"}
+        assert all(name in workflow.tools for name in ("workspace", "terminal", "codex_agent"))
 
     def test_agents_hand_real_files_to_each_other(self, make_workflow, tmp_path, stub_llm):
         """The point of the workspace: step two reads what step one wrote."""

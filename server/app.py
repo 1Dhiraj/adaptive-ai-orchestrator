@@ -15,7 +15,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import re
 import secrets
+import shutil
 import threading
 import base64
 import urllib.parse
@@ -31,16 +33,68 @@ from orchestrator import Step, StateManager, Workflow
 import orchestrator.config as _config
 from orchestrator.events import Event, EventType
 from orchestrator.inputs import InputError
-from orchestrator.export import export_csv, export_html, export_json
+from orchestrator.export import export_csv, export_html, export_json, export_pdf
 from server.security import SecurityPolicy
 from server.observability import (CONTENT_TYPE_LATEST, HTTP_DURATION, HTTP_REQUESTS,
                                   configure_tracing, metrics_payload)
 from orchestrator.tenancy import tenant_scope
 from orchestrator.tenancy import current_tenant
+from orchestrator.acquisition import AcquisitionError, CapabilityAcquirer, search_terms
+from orchestrator.tools.adaptive_email import AdaptiveEmailTool, EmailDelivery, email_message, message_digest
+from orchestrator.tools.base import ToolError
 
 STATIC_DIR = Path(__file__).parent / "static"
 EXPORT_DIR = Path(__file__).resolve().parent.parent / "artifacts"
 security = SecurityPolicy()
+_acquirers: Dict[str, CapabilityAcquirer] = {}
+_acquirer_lock = threading.RLock()
+_email_deliveries: Dict[str, EmailDelivery] = {}
+
+
+def _capabilities() -> CapabilityAcquirer:
+    root = _config.default_data_dir() / "capabilities"
+    tenant = current_tenant()
+    key = f"{root}:{tenant}"
+    with _acquirer_lock:
+        if key not in _acquirers:
+            _acquirers[key] = CapabilityAcquirer(root, tenant)
+        return _acquirers[key]
+
+
+def _email_delivery() -> EmailDelivery:
+    root = _capabilities().root / "email-delivery"
+    key = str(root)
+    with _acquirer_lock:
+        if key not in _email_deliveries:
+            _email_deliveries[key] = EmailDelivery(root)
+        service = _email_deliveries[key]
+        # A shared server browser must never expose one user's mailbox to
+        # another tenant. Browser email is limited to the local workspace.
+        local = current_tenant() == "default" and not any(os.environ.get(name) for name in (
+            "ORCHESTRATOR_API_KEY", "ORCHESTRATOR_API_KEYS", "OIDC_ISSUER"))
+        service.browser_tool = _find_browser_code_tool(
+            [*_shared_mcp_tools, *_capabilities().connected_tools()]
+        ) if local else None
+        return service
+
+
+def _find_browser_code_tool(tools: List[Any]) -> Any:
+    """Return the Playwright code tool across old/new MCP naming variants.
+
+    Recent Playwright MCP releases renamed the raw tool to
+    ``browser_run_code_unsafe``.  The configured ``web_`` prefix only changes
+    the orchestrator-facing name.  Requiring the old raw name made Gmail look
+    unavailable even while the browser tools were connected and healthy.
+    """
+    accepted = {
+        "browser_run_code", "browser_run_code_unsafe",
+        "web_browser_run_code", "web_browser_run_code_unsafe",
+    }
+    for tool in tools:
+        raw_name = getattr(getattr(tool, "_mcp_tool", None), "name", "")
+        if raw_name in accepted or getattr(tool, "name", "") in accepted:
+            return tool
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +295,7 @@ class ClarifyTask(BaseModel):
 class CreateRun(BaseModel):
     description: str = Field(..., min_length=3, description="Plain-English project description")
     run_id: Optional[str] = None
+    previous_run_id: Optional[str] = None
     #: Answers to the clarification questions, folded into the planning prompt.
     clarifications: Dict[str, Any] = Field(default_factory=dict)
     parallel: bool = True
@@ -287,6 +342,26 @@ class ChangeStep(BaseModel):
     new_requirement: Optional[str] = None
 
 
+class PrepareChange(BaseModel):
+    """A plain-English requirement change, e.g. 'use PostgreSQL instead of MongoDB'."""
+
+    request: str = Field(..., min_length=3)
+
+
+class ApplyChange(BaseModel):
+    """A proposal returned by /change/prepare, sent back verbatim to apply it.
+
+    The proposal carries its own digest and the graph revision it was built
+    against; the workflow rejects anything stale or edited, so a preview can
+    be shown to a person and confirmed later without risk of it landing on a
+    graph that moved underneath.
+    """
+
+    proposal: Dict[str, Any]
+    confirmed: bool = False
+    rerun: bool = True
+
+
 class EditStep(BaseModel):
     """Every field is optional; only what is sent gets changed."""
 
@@ -304,6 +379,21 @@ class EditStep(BaseModel):
 class RunOptions(BaseModel):
     fresh: bool = False
     only: Optional[List[str]] = None
+
+
+class CapabilitySearch(BaseModel):
+    query: str = Field(..., min_length=2, max_length=80)
+    kind: str = Field("mcp", pattern="^(mcp|skill)$")
+
+
+class ConnectCapability(BaseModel):
+    digest: str = Field(..., min_length=64, max_length=64)
+    approved: bool = False
+
+
+class BrowserEmailPermission(BaseModel):
+    approved: bool = False
+    digest: str = Field(..., min_length=64, max_length=64)
 
 
 class ProvideInputs(BaseModel):
@@ -376,6 +466,10 @@ async def lifespan(_: FastAPI):
             pass
         if _shared_mcp_registry is not None:
             _shared_mcp_registry.close_all()
+        for service in _acquirers.values():
+            service.close()
+        _acquirers.clear()
+        _email_deliveries.clear()
         manager.state.close()
 
 
@@ -478,10 +572,22 @@ async def dashboard() -> Any:
 
 @app.get("/api/health")
 async def health() -> Dict[str, Any]:
-    return {"ok": True, "version": app.version,
+    from orchestrator.llm import LLMError, get_provider
+
+    config = _config.settings.describe()
+    try:
+        provider = get_provider()
+        config["active_provider"] = provider.name
+        config["model"] = provider.model
+        config["provider_ready"] = True
+    except LLMError as exc:
+        config["active_provider"] = "unavailable"
+        config["provider_ready"] = False
+        config["provider_error"] = str(exc)
+    return {"ok": config["provider_ready"], "version": app.version,
             "api_auth_required": _auth_configured(),
             "role_access": ["viewer", "operator", "admin"],
-            "config": _config.settings.describe()}
+            "config": config}
 
 
 @app.get("/metrics", include_in_schema=False)
@@ -663,6 +769,83 @@ def _attach_configured_extras(workflow: Workflow) -> None:
         workflow.attach_skills("skills")
     for tool in _shared_mcp_tools:
         workflow.tools.register(tool)
+    _capabilities().attach(workflow.tools, workflow.skills)
+    workflow.tools.register(AdaptiveEmailTool(_email_delivery(), workflow.run_id))
+    mail_steps = [step for step in workflow.graph.steps.values() if step.requires_tool == "adaptive_email"]
+    if mail_steps:
+        from orchestrator.inputs import InputRequest
+        recipients = set(re.findall(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", workflow.description.replace('\\@', '@')))
+        for step in mail_steps:
+            if len(recipients) == 1:
+                recipient = next(iter(recipients))
+                field = next((field for field in step.inputs if field.name == "recipient"), None)
+                if field is None:
+                    field = InputRequest(name="recipient", prompt="Who should receive this email?", type="email")
+                    step.inputs.append(field)
+                if not field.provided:
+                    field.provide(recipient)
+        mail_ids = {step.id for step in mail_steps}
+        mail_credentials = {"SENDGRID_API_KEY", "EMAIL_FROM", "EMAIL_TO", "GMAIL_ADDRESS", "GMAIL_APP_PASSWORD", "email", "gmail"}
+        workflow.requirements.requirements = [req for req in workflow.requirements.requirements
+            if not (req.name in mail_credentials and set(req.needed_by).issubset(mail_ids))]
+        if workflow.state is not None:
+            workflow.state.update_run(workflow.run_id, graph=workflow.graph)
+
+
+def _planning_tools():
+    """The planner must see the same configured tools as execution."""
+    from orchestrator.tools import default_tool_manager
+    from orchestrator.connections import attach_connections
+    tools = default_tool_manager()
+    if Path("connections.json").exists():
+        attach_connections(tools, config_path="connections.json")
+    for tool in _shared_mcp_tools:
+        tools.register(tool)
+    _capabilities().attach(tools)
+    tools.register(AdaptiveEmailTool(_email_delivery()))
+    return tools
+
+
+@app.get("/api/capabilities")
+async def list_capabilities() -> Dict[str, Any]:
+    return {"extensions": _capabilities().list()}
+
+
+@app.post("/api/capabilities/search")
+async def search_capabilities(body: CapabilitySearch) -> Dict[str, Any]:
+    service = _capabilities()
+    search = service.search_skills if body.kind == "skill" else service.search_tools
+    return {"candidates": await asyncio.to_thread(search, body.query)}
+
+
+@app.get("/api/capabilities/{candidate_id}/review")
+async def review_capability(candidate_id: str) -> Dict[str, Any]:
+    return await asyncio.to_thread(_capabilities().review, candidate_id)
+
+
+@app.post("/api/capabilities/{candidate_id}/connect")
+async def connect_capability(candidate_id: str, body: ConnectCapability) -> Dict[str, Any]:
+    return await asyncio.to_thread(_capabilities().connect, candidate_id, body.digest, body.approved)
+
+
+@app.post("/api/runs/{run_id}/discover")
+async def discover_missing_capabilities(run_id: str) -> Dict[str, Any]:
+    workflow = manager.get(run_id)
+    queries = list(dict.fromkeys(
+        search_terms(req.name) for req in workflow.check_requirements().requirements
+        if req.kind.value in {"tool", "mcp_server"} and req.status.value == "missing"
+    ))[:3]
+    service = _capabilities()
+    candidates, errors = [], []
+    for query in queries:
+        if len(query) < 2:
+            continue
+        try:
+            candidates.extend(await asyncio.to_thread(service.search_tools, query))
+        except AcquisitionError as exc:
+            errors.append(str(exc))
+    return {"queries": queries, "candidates": list({c['id']: c for c in candidates}.values()),
+            "errors": errors}
 
 
 @app.post("/api/runs/clarify")
@@ -688,17 +871,64 @@ async def clarify_task(body: ClarifyTask) -> Dict[str, Any]:
 
 @app.post("/api/runs", status_code=201)
 async def create_run(body: CreateRun) -> Dict[str, Any]:
-    workflow = await asyncio.to_thread(
-        Workflow.from_description,
-        body.description,
-        run_id=body.run_id,
-        clarifications=body.clarifications,
-        parallel=body.parallel,
-        smart_invalidation=body.smart_invalidation,
-        max_workers=body.max_workers,
-        state=manager.state,
-        verbose=False,
-    )
+    tools = await asyncio.to_thread(_planning_tools)
+    previous_root = None
+    previous_files: List[str] = []
+    extra_guidance = ""
+    if body.previous_run_id:
+        if body.previous_run_id == body.run_id:
+            raise HTTPException(status_code=400, detail="a follow-up needs a new run ID")
+        previous = manager.get(body.previous_run_id)
+        previous_root = _run_workspace(previous)
+        if previous_root and previous_root.is_dir():
+            copied_bytes = 0
+            for entry in _workspace_files(previous):
+                if len(previous_files) >= 30:
+                    break
+                if (entry["size"] > 2_000_000 or copied_bytes + entry["size"] > 8_000_000
+                        or entry["path"].endswith(".log.jsonl")
+                        or (previous_root / entry["path"]).is_symlink()):
+                    continue
+                previous_files.append(entry["path"])
+                copied_bytes += entry["size"]
+        extra_guidance = (
+            "This message continues the person's previous task. Use its context when words such as "
+            "'it' or 'that file' refer to earlier work. Earlier request: "
+            f"{previous.description[:1000]}\n"
+            "Files copied into this run's workspace (relative paths): "
+            + (", ".join(previous_files) if previous_files else "none")
+        )
+    try:
+        workflow = await asyncio.to_thread(
+            Workflow.from_description,
+            body.description,
+            run_id=body.run_id,
+            clarifications=body.clarifications,
+            parallel=body.parallel,
+            smart_invalidation=body.smart_invalidation,
+            max_workers=body.max_workers,
+            state=manager.state,
+            verbose=False,
+            tool_manager=tools,
+            extra_guidance=extra_guidance,
+            force_workspace=bool(previous_files),
+        )
+    except Exception as exc:
+        from orchestrator.planner import PlanningError
+        from orchestrator.llm import LLMError
+
+        if isinstance(exc, (PlanningError, LLMError)):
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise
+    if previous_root and previous_files:
+        target_root = _run_workspace(workflow)
+        if target_root:
+            for relative in previous_files:
+                source = previous_root / relative
+                target = target_root / relative
+                if source.is_file() and not source.is_symlink() and source.stat().st_size <= 2_000_000:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, target)
     _attach_configured_extras(workflow)
     if body.ask_for_requirements:
         # After the extras are attached, so tools registered above count as
@@ -710,6 +940,16 @@ async def create_run(body: CreateRun) -> Dict[str, Any]:
 
     remember_all(body.clarifications, body.description)
     return _snapshot(workflow)
+
+
+@app.post("/api/runs/{run_id}/replan", status_code=201)
+async def replan_with_connected_tools(run_id: str) -> Dict[str, Any]:
+    workflow = manager.get(run_id)
+    if manager.busy.get(run_id) or any(r.status.value != "pending" for r in workflow.results.values()):
+        raise HTTPException(status_code=409, detail="This task already started. Use its step editor to change tools without repeating completed work.")
+    result = await create_run(CreateRun(description=workflow.description))
+    result["previous_plan"] = run_id
+    return result
 
 
 @app.post("/api/setup/forget")
@@ -842,6 +1082,32 @@ async def change_step(run_id: str, step_id: str, body: ChangeStep) -> Dict[str, 
     return {"started": True, "step_id": step_id, "impact": workflow.impact_of(step_id)}
 
 
+@app.post("/api/runs/{run_id}/change/prepare")
+async def prepare_change(run_id: str, body: PrepareChange) -> Dict[str, Any]:
+    """Translate a requirement change and show its impact. Changes nothing."""
+    workflow = manager.get(run_id)
+    try:
+        return await asyncio.to_thread(workflow.prepare_change, body.request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/runs/{run_id}/change/apply")
+async def apply_change(run_id: str, body: ApplyChange) -> Dict[str, Any]:
+    """Apply a previously previewed change, once a person has confirmed it."""
+    workflow = manager.get(run_id)
+    if not body.confirmed:
+        raise HTTPException(
+            status_code=400,
+            detail="confirm the fact delta or plan diff before applying the change")
+    try:
+        await asyncio.to_thread(workflow.apply_change, body.proposal,
+                                confirmed=True, rerun=body.rerun)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _snapshot(workflow)
+
+
 @app.post("/api/runs/{run_id}/steps/{step_id}/inputs")
 async def provide_step_inputs(run_id: str, step_id: str, body: ProvideInputs) -> Dict[str, Any]:
     """Answer the questions a step is waiting on."""
@@ -944,9 +1210,26 @@ async def list_pending_actions(run_id: str) -> Dict[str, Any]:
 
 
 @app.post("/api/runs/{run_id}/actions/{step_id}/approve")
-async def approve_action(run_id: str, step_id: str, resume: bool = True) -> Dict[str, Any]:
+async def approve_action(run_id: str, step_id: str, resume: bool = True,
+                         body: Optional[BrowserEmailPermission] = None) -> Dict[str, Any]:
     """Authorise a held irreversible action, then perform it."""
     workflow = manager.get(run_id)
+    action = workflow.pending_actions().get(step_id)
+    if action and action.tool == "adaptive_email":
+        details = _email_details(workflow, step_id)
+        if not body or not body.approved or body.digest != details["digest"]:
+            raise HTTPException(status_code=400, detail="Review and approve the exact email before sending")
+        # On a local dashboard, browser delivery is the normal path.  Do not
+        # silently fall back to SMTP/API merely because credentials exist: the
+        # person explicitly reviews the real Gmail draft before Send is armed.
+        if details["browser_available"]:
+            ready = (details.get("method") == "browser"
+                     and details["status"] in {"draft_ready", "sent"}
+                     and details.get("reviewed_digest") == details["digest"])
+        else:
+            ready = details["api_available"]
+        if not ready:
+            raise HTTPException(status_code=409, detail="Open Gmail and prepare the reviewed browser draft first")
     try:
         workflow.approve_action(step_id)
     except KeyError as exc:
@@ -954,6 +1237,55 @@ async def approve_action(run_id: str, step_id: str, resume: bool = True) -> Dict
     if resume:
         manager.launch(run_id, "resume")
     return {"approved": step_id}
+
+
+def _email_details(workflow: Workflow, step_id: str) -> dict:
+    action = workflow.pending_actions().get(step_id)
+    if action is None or action.tool != "adaptive_email":
+        raise HTTPException(status_code=404, detail="No email draft is awaiting review")
+    step = workflow.graph.get(step_id)
+    message = email_message(action.payload, {"inputs": {**workflow.all_input_values(), **step.input_values()}})
+    return _email_delivery().status(workflow.run_id, step_id, message)
+
+
+@app.get("/api/runs/{run_id}/email/{step_id}")
+async def email_details(run_id: str, step_id: str) -> dict:
+    """The held email, and the digest that authorises sending exactly it.
+
+    Approval is bound to this digest so that what a person read is what gets
+    sent. Without a way to read it back, the dashboard could never approve an
+    email at all -- the approve endpoint rejects anything unbound.
+    """
+    return _email_details(manager.get(run_id), step_id)
+
+
+@app.post("/api/runs/{run_id}/email/{step_id}/open-browser")
+async def open_gmail_for_email(run_id: str, step_id: str, body: BrowserEmailPermission) -> dict:
+    workflow = manager.get(run_id)
+    details = _email_details(workflow, step_id)
+    if body.digest != details["digest"] or not body.approved:
+        raise HTTPException(status_code=400, detail="Approve browser access for this email first")
+    if manager.busy.get(run_id):
+        raise HTTPException(status_code=409, detail="Wait until the task pauses before opening Gmail")
+    try:
+        result = await asyncio.to_thread(
+            _email_delivery().open_browser, run_id, step_id,
+            details["message"], body.approved)
+    except ToolError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return result
+
+
+@app.post("/api/runs/{run_id}/email/{step_id}/prepare-browser")
+async def prepare_gmail_draft(run_id: str, step_id: str) -> dict:
+    workflow = manager.get(run_id)
+    details = _email_details(workflow, step_id)
+    try:
+        return await asyncio.to_thread(
+            _email_delivery().prepare_browser, run_id, step_id,
+            details["message"])
+    except ToolError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.post("/api/runs/{run_id}/actions/{step_id}/reject")
@@ -1115,22 +1447,31 @@ async def trigger_webhook(token: str, payload: Dict[str, Any]) -> Dict[str, Any]
 async def export_run(run_id: str, format: str = "json") -> Any:
     workflow = manager.get(run_id)
     EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-    exporters = {"json": export_json, "html": export_html, "csv": export_csv}
+    exporters = {"json": export_json, "html": export_html,
+                 "csv": export_csv, "pdf": export_pdf}
     if format not in exporters:
         raise HTTPException(status_code=400, detail=f"unknown format: {format}")
     path = EXPORT_DIR / f"{run_id}.{format}"
     exporters[format](workflow, str(path))
-    media = {"json": "application/json", "html": "text/html", "csv": "text/csv"}[format]
+    media = {"json": "application/json", "html": "text/html",
+             "csv": "text/csv", "pdf": "application/pdf"}[format]
     return FileResponse(path, media_type=media, filename=path.name)
 
 
+def _run_workspace(workflow: Workflow) -> Optional[Path]:
+    """Return the shared per-run workspace exposed by built-in file tools."""
+    for name in ("workspace", "artifact_store", "computer_use", "computer_task"):
+        root = getattr(workflow.tools.get(name), "workspace", None)
+        if root is not None:
+            return Path(root).resolve()
+    return None
+
+
 def _workspace_files(workflow: Workflow) -> List[Dict[str, Any]]:
-    """List files produced inside this run's confined coding workspace."""
-    tool = workflow.tools.get("workspace")
-    root = getattr(tool, "workspace", None)
+    """List files produced inside this run's confined workspace."""
+    root = _run_workspace(workflow)
     if root is None or not Path(root).is_dir():
         return []
-    root = Path(root).resolve()
     files = []
     for path in sorted(p for p in root.rglob("*") if p.is_file()):
         files.append({
@@ -1148,11 +1489,9 @@ async def list_run_files(run_id: str) -> List[Dict[str, Any]]:
 @app.get("/api/runs/{run_id}/files/{relative_path:path}")
 async def download_run_file(run_id: str, relative_path: str) -> Any:
     workflow = manager.get(run_id)
-    tool = workflow.tools.get("workspace")
-    root = getattr(tool, "workspace", None)
+    root = _run_workspace(workflow)
     if root is None:
-        raise HTTPException(status_code=404, detail="this workflow has no coding workspace")
-    root = Path(root).resolve()
+        raise HTTPException(status_code=404, detail="this workflow has no workspace")
     target = (root / relative_path).resolve()
     if target != root and root not in target.parents:
         raise HTTPException(status_code=400, detail="file path leaves the workflow workspace")
@@ -1237,7 +1576,9 @@ def _snapshot(workflow: Workflow) -> Dict[str, Any]:
             step_id: [r.to_dict() for r in requests]
             for step_id, requests in workflow.input_form().items()
         },
-        "pending_actions": {sid: a.to_dict() for sid, a in workflow.pending_actions().items()},
+        "pending_actions": {sid: {**a.to_dict(), **({"email": _email_details(workflow, sid)}
+                            if a.tool == "adaptive_email" else {})}
+                            for sid, a in workflow.pending_actions().items()},
         "workspace_files": _workspace_files(workflow),
         "schedules": manager.state.list_schedules(workflow.run_id),
         "webhooks": manager.state.list_webhooks(workflow.run_id),
@@ -1249,3 +1590,8 @@ def _snapshot(workflow: Workflow) -> Dict[str, Any]:
 @app.exception_handler(KeyError)
 async def _key_error_handler(request: Any, exc: KeyError) -> JSONResponse:  # pragma: no cover
     return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+
+@app.exception_handler(AcquisitionError)
+async def _acquisition_error_handler(request: Any, exc: AcquisitionError) -> JSONResponse:
+    return JSONResponse(status_code=400, content={"detail": str(exc)})

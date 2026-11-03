@@ -77,7 +77,17 @@ class Step:
     #: ``source":"trigger.status"`` reads incoming webhook data.
     condition: Optional[Dict[str, Any]] = None
 
+    output_type: str = "text"
+    accepts: List[str] = field(default_factory=lambda: ["code", "json", "text"])
+    assumes: List[str] = field(default_factory=list)
+
     def __post_init__(self) -> None:
+        if not isinstance(self.output_type, str):
+            raise ValueError("output_type must be a string")
+        for name in ("accepts", "assumes"):
+            values = getattr(self, name)
+            if not isinstance(values, list) or any(not isinstance(v, str) for v in values):
+                raise ValueError(f"{name} must be a list of strings")
         if not self.name:
             self.name = self.id.replace("_", " ").title()
         # A step depending on itself is always a bug; drop it rather than
@@ -130,6 +140,9 @@ class Step:
                 "depends_on": sorted(self.depends_on),
                 "inputs": {k: str(v) for k, v in sorted(self.input_values().items())},
                 "condition": self.condition,
+                "output_type": self.output_type,
+                "accepts": sorted(self.accepts),
+                "assumes": sorted(self.assumes),
             },
             sort_keys=True,
         )
@@ -201,6 +214,12 @@ class StepResult:
     #: Signature of the produced output, used to stop change propagation
     #: when a re-run produces a byte-identical result.
     output_hash: str = ""
+    raw_output: str = ""
+    declared_assumptions: List[str] = field(default_factory=list)
+    detected_assumptions: List[str] = field(default_factory=list)
+    assumed_facts: Dict[str, str] = field(default_factory=dict)
+    change_status: str = ""
+    invalidation_reasons: List[str] = field(default_factory=list)
 
     @property
     def duration_s(self) -> float:
@@ -225,6 +244,12 @@ class StepResult:
             "usage": self.usage.to_dict(),
             "input_hash": self.input_hash,
             "output_hash": self.output_hash,
+            "raw_output": self.raw_output,
+            "declared_assumptions": self.declared_assumptions,
+            "detected_assumptions": self.detected_assumptions,
+            "assumed_facts": self.assumed_facts,
+            "change_status": self.change_status,
+            "invalidation_reasons": self.invalidation_reasons,
         }
 
     @classmethod
@@ -250,6 +275,12 @@ class StepResult:
             ),
             input_hash=data.get("input_hash", ""),
             output_hash=data.get("output_hash", ""),
+            raw_output=data.get("raw_output", data.get("output", "")),
+            declared_assumptions=list(data.get("declared_assumptions", [])),
+            detected_assumptions=list(data.get("detected_assumptions", [])),
+            assumed_facts=dict(data.get("assumed_facts", {})),
+            change_status=data.get("change_status", ""),
+            invalidation_reasons=list(data.get("invalidation_reasons", [])),
         )
 
 

@@ -17,12 +17,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
 import re
+import shutil
+import subprocess
+import tempfile
 import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from .config import settings
@@ -40,6 +45,19 @@ PRICING: Dict[str, tuple] = {
     "claude-haiku-4-5-20251001": (1.00, 5.00),
     "gpt-4o": (2.50, 10.00),
     "gpt-4o-mini": (0.15, 0.60),
+    # Together AI, per million tokens, as its /v1/models endpoint reports
+    # them. Listed because the fallback below is ~4x these rates, and a demo
+    # that overstates its own cost argues against itself.
+    "openai/gpt-oss-120b": (0.15, 0.60),
+    "openai/gpt-oss-20b": (0.05, 0.20),
+    "zai-org/GLM-5.3-Flash": (0.15, 0.50),
+    "deepseek-ai/DeepSeek-V4.1-Flash": (0.30, 1.20),
+    "deepseek-ai/DeepSeek-V4-Flash-0731": (0.14, 0.28),
+    "MiniMaxAI/MiniMax-M3": (0.30, 1.20),
+    "MiniMaxAI/MiniMax-M2.7": (0.30, 1.20),
+    "Qwen/Qwen3-VL-8B-Instruct": (0.18, 0.68),
+    "Qwen/Qwen3-VL-32B-Instruct": (0.50, 1.50),
+    "mistralai/Mistral-Small-24B-Instruct-2501": (0.10, 0.30),
     # NVIDIA NIM free tier is credit-based, not per-token billed.
     "meta/llama-3.1-8b-instruct": (0.0, 0.0),
     "nvidia/nemotron-3-super-120b-a12b": (0.0, 0.0),
@@ -92,17 +110,41 @@ class LLMProvider(ABC):
         system: Optional[str] = None,
         json_mode: bool = False,
         metadata: Optional[Dict[str, str]] = None,
+        images: Optional[List[bytes]] = None,
     ) -> LLMResponse:
         """Generate a completion.
 
         ``metadata`` carries orchestrator-side hints (currently just the
         caller's agent role). Real providers ignore it; the stub uses it so
         its output matches the role without guessing from the prompt text.
+
+        ``images`` are raw PNG bytes, for looking at a screen rather than
+        reading a description of one. A provider that cannot accept them
+        raises rather than answering from the text alone -- a vision loop
+        that silently went blind would invent coordinates and click them.
         """
-        response = self._generate(prompt, system, json_mode, metadata)
+        if images:
+            response = self._generate_with_images(prompt, system, json_mode,
+                                                  metadata, images)
+        else:
+            response = self._generate(prompt, system, json_mode, metadata)
         with self._lock:
             self.total_usage = self.total_usage + response.usage
         return response
+
+    def _generate_with_images(self, prompt: str, system: Optional[str],
+                              json_mode: bool, metadata: Optional[Dict[str, str]],
+                              images: List[bytes]) -> LLMResponse:
+        """Override in providers that accept images. Refuses by default."""
+        raise LLMError(
+            f"provider '{self.name}' ({getattr(self, 'model', '?')}) cannot accept "
+            "images. Use a vision model -- e.g. LLM_PROVIDER=openai with "
+            "OPENAI_BASE_URL=https://openrouter.ai/api/v1 and "
+            "OPENAI_MODEL=minimax/minimax-m3.")
+
+    def supports_images(self) -> bool:
+        """Whether this provider can be given screenshots."""
+        return type(self)._generate_with_images is not LLMProvider._generate_with_images
 
     def reset_usage(self) -> None:
         with self._lock:
@@ -333,6 +375,100 @@ class AnthropicProvider(LLMProvider):
         )
 
 
+class CodexSubscriptionProvider(LLMProvider):
+    """Use the user's signed-in Codex CLI, not an OpenAI API key.
+
+    Each call is an isolated, read-only Codex turn. The orchestrator remains
+    responsible for planning and tool execution; Codex supplies model output.
+    This is deliberately explicit and never selected by API-key detection.
+    """
+
+    name = "codex"
+
+    def __init__(self, model: Optional[str] = None):
+        super().__init__()
+        configured = os.environ.get("CODEX_EXECUTABLE", "").strip()
+        self.executable = None
+        if configured:
+            self.executable = configured if Path(configured).is_file() else shutil.which(configured)
+            if not self.executable:
+                raise LLMError(f"CODEX_EXECUTABLE does not point to a runnable CLI: {configured}")
+        else:
+            self.executable = shutil.which("codex")
+        if not self.executable and os.name == "nt":
+            local_app_data = os.environ.get("LOCALAPPDATA", "")
+            if local_app_data:
+                bin_dir = Path(local_app_data) / "OpenAI" / "Codex" / "bin"
+                candidates = [p for p in bin_dir.glob("*/codex.exe") if p.is_file()]
+                if candidates:
+                    self.executable = str(max(candidates, key=lambda p: p.stat().st_mtime))
+        if not self.executable:
+            raise LLMError("Codex CLI was not found. Install Codex or set CODEX_EXECUTABLE to codex.exe")
+        self.model = model or settings.codex_model
+
+    def _generate_with_images(self, prompt: str, system: Optional[str],
+                              json_mode: bool, metadata: Optional[Dict[str, str]],
+                              images: List[bytes]) -> LLMResponse:
+        return self._run(prompt, system, json_mode, images)
+
+    def _generate(self, prompt: str, system: Optional[str], json_mode: bool,
+                  metadata: Optional[Dict[str, str]]) -> LLMResponse:
+        return self._run(prompt, system, json_mode, [])
+
+    def _run(self, prompt: str, system: Optional[str], json_mode: bool,
+             images: List[bytes]) -> LLMResponse:
+        instructions = (
+            "You are supplying one model response to an external orchestrator. "
+            "Do not use tools, inspect files, or perform the task yourself. "
+            "Your CLI working directory is an isolated inference sandbox, not "
+            "the task workspace: never infer a task file path from it. Use "
+            "only file paths explicitly supplied by the orchestrator or its "
+            "tool results. Return only the requested answer; the orchestrator "
+            "executes actions."
+        )
+        if json_mode:
+            instructions += " Return valid JSON only, without Markdown fences."
+        request = f"{instructions}\n\n"
+        if system:
+            request += f"SYSTEM INSTRUCTIONS:\n{system}\n\n"
+        request += f"USER REQUEST:\n{prompt}"
+        # The project may have a Together or gateway API key in .env.local.
+        # Never let it silently override the CLI's ChatGPT sign-in.
+        child_env = os.environ.copy()
+        for key in ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL"):
+            child_env.pop(key, None)
+        started = time.time()
+        with tempfile.TemporaryDirectory(prefix="orchestrator-codex-") as temp:
+            command = [self.executable, "exec", "--sandbox", "read-only",
+                       "--ephemeral", "--ignore-user-config",
+                       "--skip-git-repo-check", "-C", temp,
+                       "--model", self.model]
+            for index, raw in enumerate(images):
+                path = Path(temp) / f"screen-{index}.png"
+                path.write_bytes(raw)
+                command.extend(["--image", str(path)])
+            command.append("-")
+            try:
+                result = subprocess.run(
+                    command, input=request, text=True, capture_output=True,
+                    encoding="utf-8", errors="replace", env=child_env,
+                    timeout=settings.llm_timeout_s, check=False)
+            except subprocess.TimeoutExpired as exc:
+                raise LLMError(f"Codex did not answer within {settings.llm_timeout_s:g}s") from exc
+            except OSError as exc:
+                raise LLMError(f"Could not start Codex CLI: {exc}") from exc
+        answer = result.stdout.strip()
+        if result.returncode or not answer:
+            diagnostic = result.stderr.strip().splitlines()
+            detail = diagnostic[-1] if diagnostic else "empty answer"
+            raise LLMError(f"Codex CLI failed ({result.returncode}): {detail}")
+        return LLMResponse(
+            text=answer,
+            usage=LLMUsage(calls=1, prompt_tokens=estimate_tokens(request),
+                           completion_tokens=estimate_tokens(answer), cost_usd=0.0),
+            model=self.model, latency_s=time.time() - started)
+
+
 class OpenAIProvider(LLMProvider):
     """GPT via the Chat Completions API. Also fits any OpenAI-compatible
     endpoint (Azure OpenAI, OpenRouter, vLLM, ...) via ``base_url``."""
@@ -349,16 +485,42 @@ class OpenAIProvider(LLMProvider):
         self.base_url = (base_url or settings.openai_base_url).rstrip("/")
         self.max_retries = settings.llm_max_retries if max_retries is None else max_retries
 
+    def _generate_with_images(self, prompt: str, system: Optional[str],
+                              json_mode: bool, metadata: Optional[Dict[str, str]],
+                              images: List[bytes]) -> LLMResponse:
+        """Same endpoint, with the image parts OpenAI-compatible APIs expect.
+
+        Written against the shared format rather than one vendor's, so the
+        same path serves OpenAI, OpenRouter (minimax, qwen-vl, gemini) and any
+        compatible gateway -- whichever model is configured.
+        """
+        import base64
+
+        parts: List[Dict[str, object]] = [{"type": "text", "text": prompt}]
+        for raw in images:
+            encoded = base64.b64encode(raw).decode("ascii")
+            parts.append({"type": "image_url",
+                          "image_url": {"url": f"data:image/png;base64,{encoded}"}})
+        return self._generate(prompt, system, json_mode, metadata, _content=parts)
+
     def _generate(self, prompt: str, system: Optional[str], json_mode: bool,
-                  metadata: Optional[Dict[str, str]] = None) -> LLMResponse:
+                  metadata: Optional[Dict[str, str]] = None,
+                  _content: Optional[List[Dict[str, object]]] = None) -> LLMResponse:
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
-        messages.append({"role": "user", "content": prompt})
+        messages.append({"role": "user", "content": _content if _content else prompt})
 
         body: Dict[str, object] = {"model": self.model, "messages": messages}
+        # Without a cap, gateways reserve the model's whole context against the
+        # account: OpenRouter quotes 131072 tokens for a one-line answer and
+        # refuses the call outright when the credit limit is lower. The cap is
+        # a budget, not a quality setting -- raise it for long generations.
+        if settings.llm_max_output_tokens > 0:
+            body["max_tokens"] = settings.llm_max_output_tokens
         if json_mode:
             body["response_format"] = {"type": "json_object"}
+        body.update(self._provider_request_options(json_mode))
 
         started = time.time()
         data = _post_json(
@@ -380,6 +542,10 @@ class OpenAIProvider(LLMProvider):
             ),
             model=self.model, latency_s=time.time() - started,
         )
+
+    def _provider_request_options(self, json_mode: bool) -> Dict[str, object]:
+        """Provider-specific fields for OpenAI-compatible request bodies."""
+        return {}
 
 
 class NvidiaProvider(OpenAIProvider):
@@ -403,6 +569,18 @@ class NvidiaProvider(OpenAIProvider):
         self.model = model or settings.nvidia_model
         self.base_url = (base_url or settings.nvidia_base_url).rstrip("/")
         self.max_retries = settings.llm_max_retries if max_retries is None else max_retries
+
+    def _provider_request_options(self, json_mode: bool) -> Dict[str, object]:
+        """Keep Nemotron's final answer non-empty and JSON-focused.
+
+        NVIDIA recommends ``force_nonempty_content`` for coding agents.
+        Schema-bound calls also disable the reasoning trace so the returned
+        content is the requested JSON object rather than an unfinished trace.
+        """
+        options: Dict[str, object] = {"force_nonempty_content": True}
+        if json_mode:
+            options["enable_thinking"] = False
+        return {"chat_template_kwargs": options}
 
 
 class OllamaProvider(LLMProvider):
@@ -593,9 +771,9 @@ class StubProvider(LLMProvider):
             return {"id": step_id, "role": role, "description": description,
                     "depends_on": deps or [], "tool": tool}
 
-        software = any(word in text for word in (
-            "build an app", "build a website", "web app", "mobile app", "software",
-            "api", "frontend", "backend", "code", "application"))
+        from .planner import is_software_task
+
+        software = is_software_task(task_text)
         desktop = any(word in text for word in (
             "microsoft word", "powerpoint", "excel", "desktop", "open the", ".docx", ".pptx"))
         collect_data = any(word in text for word in (
@@ -694,6 +872,7 @@ _factory_lock = threading.Lock()
 _PROVIDER_CLASSES: Dict[str, type] = {
     "gemini": GeminiProvider,
     "anthropic": AnthropicProvider,
+    "codex": CodexSubscriptionProvider,
     "openai": OpenAIProvider,
     "nvidia": NvidiaProvider,
     "ollama": OllamaProvider,
@@ -720,8 +899,8 @@ def get_provider(force_stub: bool = False) -> LLMProvider:
     """Return the process-wide provider, building it on first use.
 
     Selection follows :meth:`Settings.resolve_provider`: an explicit
-    ``LLM_PROVIDER``, else whichever API key is present (Gemini, then
-    Anthropic, then OpenAI), else the offline stub. A provider that fails to
+    ``LLM_PROVIDER``, else NVIDIA when its key is present, else the offline
+    stub. A provider that fails to
     construct (bad key, missing package) degrades to the stub rather than
     crashing the whole run.
     """
@@ -732,9 +911,46 @@ def get_provider(force_stub: bool = False) -> LLMProvider:
             try:
                 _default_provider = build_provider(name)
             except Exception as exc:  # noqa: BLE001 - degrade instead of crashing
+                if settings.llm_provider and not force_stub:
+                    raise LLMError(
+                        f"Configured provider '{name}' is unavailable: {exc}") from exc
                 print(f"[llm] '{name}' unavailable ({exc}); falling back to stub provider.")
                 _default_provider = StubProvider()
         return _default_provider
+
+
+def provider_for_role(provider: LLMProvider, role: str) -> LLMProvider:
+    """A role-specific model, when one is configured for this provider.
+
+    Roles do genuinely different work: planning wants reasoning, the browser
+    and desktop loops want speed and reliable JSON, and ``screen_locator``
+    wants eyes -- it is handed a screenshot, so on a text-only model that
+    step cannot work at all. Both NVIDIA and OpenAI-compatible endpoints
+    (Together, OpenRouter, vLLM) can therefore be pointed at a different
+    model per role:
+
+        NVIDIA_MODEL_SCREEN_LOCATOR=...
+        OPENAI_MODEL_SCREEN_LOCATOR=MiniMaxAI/MiniMax-M3
+
+    Anything unset falls through to the run's main model, so this stays
+    entirely optional.
+    """
+    kinds = ((NvidiaProvider, "NVIDIA_MODEL_"), (OpenAIProvider, "OPENAI_MODEL_"))
+    prefix = next((p for kind, p in kinds if isinstance(provider, kind)), None)
+    if prefix is None:
+        return provider
+    env_role = re.sub(r"[^A-Z0-9]+", "_", role.upper())
+    model = os.environ.get(f"{prefix}{env_role}", "").strip()
+    if not model or model == provider.model:
+        return provider
+    with provider._lock:
+        cache = getattr(provider, "_role_providers", {})
+        if model not in cache:
+            cache[model] = type(provider)(
+                api_key=provider.api_key, model=model,
+                base_url=provider.base_url, max_retries=provider.max_retries)
+        provider._role_providers = cache
+        return cache[model]
 
 
 def set_provider(provider: Optional[LLMProvider]) -> None:

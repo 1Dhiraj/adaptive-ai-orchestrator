@@ -10,8 +10,9 @@ user account:
 npx adaptive-ai-orchestrator
 ```
 
-Version 1.0.0 ships the verified Windows runtime. The release workflow builds
-Windows, macOS and Linux binaries before publishing subsequent multiplatform releases.
+Version 1.1.0 ships the latest adaptive execution, browser, and approval
+fixes. The release workflow builds Windows, macOS and Linux binaries before
+publishing subsequent multiplatform releases.
 
 For a permanent command:
 
@@ -37,10 +38,9 @@ python main.py            # the four headline scenarios, no API key needed
 
 With no API key set for anything, everything runs on a deterministic offline
 LLM, so the demo, the tests and the benchmarks all work out of the box and
-give identical results on every machine. Set `GEMINI_API_KEY`,
-`ANTHROPIC_API_KEY` or `OPENAI_API_KEY` to switch to that provider — or run
-`ollama pull llama3.1` and `LLM_PROVIDER=ollama` for free local inference with
-no key and no rate limit. See [Which LLM provider](#which-llm-provider).
+give identical results on every machine. Set `NVIDIA_API_KEY` to select NVIDIA
+NIM automatically, or select another provider explicitly with `LLM_PROVIDER`.
+See [Which LLM provider](#which-llm-provider).
 
 ---
 
@@ -555,16 +555,143 @@ wf.attach_skills("skills")          # explicit, like MCP — never auto-scanned
 wf.skills.match(some_step)          # what would apply, without running anything
 ```
 
-Three shipped examples: `api-design-conventions` (backend), `writing-style`
-(writer), `incident-postmortem` (devops/reviewer, keyword-triggered).
+Six shipped examples. Three are house-style samples —
+`api-design-conventions` (backend), `writing-style` (writer),
+`incident-postmortem` (devops/reviewer, keyword-triggered). Three carry the
+procedures for real-interface work, and activate on any step that mentions
+them: `browser-tasks`, `desktop-tasks` and `web-research`. They are what stops
+a browser step reporting "opened the page" as though it were an answer.
+
+### `skill.sh`
+
+Matching is implicit — by role and keyword, never wired up per step — so the
+two questions that actually come up are "is this file valid?" and "which steps
+will this fire on?". Both are answered without a Python session:
+
+```bash
+./skill.sh list                       # every skill, and what it matches on
+./skill.sh show browser-tasks         # one skill in full
+./skill.sh validate                   # parse them all; non-zero if any fail
+./skill.sh match "Open github.com and click Issues"    # which ones would apply
+./skill.sh render "research python releases"           # the exact prompt block
+./skill.sh new my-skill               # scaffold a new one
+./skill.sh test                       # run the skill test suite
+```
+
+`validate` also warns about the mistakes that are invisible at runtime: a
+skill with no `roles` and no `keywords` is injected into *every* step, and one
+over 4000 characters is silently truncated when it gets there.
+
+Runs under Git Bash, WSL, macOS and Linux. On Windows without a shell, the same
+library is one import away: `from orchestrator.skills import SkillLibrary`.
 
 ---
 
+## Changing a requirement
+
+```bash
+orchestrator change <run-id> "use PostgreSQL instead of MongoDB"
+```
+
+Prints the requirement that changed, every affected step *with the reason it
+was affected*, and what stays reused — then asks before re-running anything.
+
+```
+Requirement change
+  database.engine: 'MongoDB' -> 'PostgreSQL'
+
+Affected steps (3):
+  schema                  database.engine: owner (P4)
+  backend                 database.engine: assumed fact
+  tests                   upstream may change; signature checked at execution
+
+Reused unchanged (2): frontend, requirements
+
+Apply this change and re-run the affected steps? [y/N]
+```
+
+`backend` there has **no dependency edge** to `schema`. It re-runs because it
+declared it relied on `database.engine` — which is the whole point: plain
+dependency tracking would have called it valid and left stale MongoDB code
+behind. Run `python examples/12_requirement_change.py` to watch it happen.
+
+`--yes` skips the prompt, `--no-rerun` applies the change without executing.
+Over HTTP the same split is `POST /change/prepare` (reads only) and
+`POST /change/apply` (refuses anything not explicitly confirmed).
+
+---
+
+## Requirement changes (core Python API)
+
+The planner can extract requirement facts with a key, value, aliases and owner
+step. Workers declare assumptions; whole-word matches of fact values or aliases
+also record hidden dependencies. Signatures include those facts' current values.
+The owner always depends on its own fact (P4), even when it omits its declaration.
+
+```python
+from orchestrator import Step, Workflow
+from orchestrator.graph import DependencyGraph
+from orchestrator.change_aware import Fact
+
+graph = DependencyGraph([
+    Step("storage", "Define the database schema", "database"),
+    Step("client", "Write a client for the database fact", "backend",
+         assumes=["database"]),  # no edge to storage: a hidden dependency
+    Step("tests", "Test the client", "testing", depends_on=["client"]),
+], facts=[Fact("database", "MongoDB", "storage", ["Mongo"])])
+wf = Workflow(graph=graph)
+wf.run_full()
+
+proposal = wf.prepare_change("use PostgreSQL instead of MongoDB")
+print(proposal)  # old/new values, affected steps and reasons; no tools run
+if input("Apply this exact change? [y/N] ").strip().lower() == "y":
+    report = wf.apply_change(proposal, confirmed=True)
+```
+
+`preview_fact_change({"database": "PostgreSQL"})` provides the same preview
+without a translator call. When no key matches, `prepare_change` returns a new
+plan plus a diff for review; confirming a re-plan conservatively clears cached
+results. Stale or modified previews are rejected. Old pending action approvals
+are revoked for affected steps, so a revised payload needs its own approval.
+
+Facts, declared/detected assumptions, actual generated output (`raw_output`),
+canonical output (`output`), invalidation reasons and `reused` / `rerun` /
+`cut_off` status persist with the workflow. The requirements report checks
+output types (`code`, `json`, `text`), accepted dependency types, fact owners,
+assumption keys and a **planning token estimate**, not measured API usage.
+
+`ORCHESTRATOR_CHANGE_AWARE=false` keeps structural signature behaviour.
+`ORCHESTRATOR_SEMANTIC_CUTOFF=false` is the default: only identical outputs
+stop propagation. Opting in adds Python AST equivalence, canonical JSON
+comparison and an LLM text judge above the bag-of-words cosine threshold
+(`ORCHESTRATOR_EQUIVALENCE_THRESHOLD=0.95`). Unknown code languages use
+conservative literal comparison. Tool-backed steps never receive semantic
+cutoff. The judge's reported tokens are included in step usage.
+
+Semantic cutoff has **not been measured on NVIDIA**. Existing research results
+remain unchanged. CLI/API/dashboard change controls are the next phase;
+these Python methods are the current entry points. Offline translation supports
+simple `change X to Y` and `use Y instead of X` requests; other requests return
+a reviewable generic re-plan rather than claiming full language understanding.
+
 ## Which LLM provider
 
-Four real providers, auto-detected from whichever API key is present —
-**Gemini, then Anthropic, then OpenAI** — plus **Ollama** for free local
-inference, and the deterministic **stub** when none of the above apply.
+NVIDIA NIM is selected when `NVIDIA_API_KEY` is present. Without it, automatic
+selection uses the deterministic **stub**. An explicit `LLM_PROVIDER` overrides
+this choice; Gemini, Anthropic, OpenAI and Ollama remain supported.
+
+```dotenv
+LLM_PROVIDER=nvidia
+NVIDIA_API_KEY=your-key-in-your-local-env-file
+NVIDIA_MODEL=nvidia/nemotron-3-super-120b-a12b
+NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
+```
+
+Never commit your key. Optional `NVIDIA_MODEL_AGENTS`, `NVIDIA_MODEL_PLANNER`,
+`NVIDIA_MODEL_CHANGE_TRANSLATOR` and `NVIDIA_MODEL_EQUIVALENCE_JUDGE` override
+the model for those roles; `NVIDIA_MODEL_<SPECIALIST_ROLE>` overrides an
+individual specialist. Empty overrides inherit the base model. Offline or
+explicitly injected non-NVIDIA providers remain offline/non-NVIDIA.
 
 ```bash
 export LLM_PROVIDER=ollama              # force a specific one
@@ -579,9 +706,11 @@ wf = Workflow(steps, llm=build_provider("openai"))
 
 | Provider | Needs | Notes |
 |---|---|---|
-| `gemini` | `GEMINI_API_KEY` | Default when present |
+| `nvidia` | `NVIDIA_API_KEY` | Automatic primary; OpenAI-compatible NVIDIA NIM endpoint |
+| `gemini` | `GEMINI_API_KEY` | Select explicitly |
 | `anthropic` | `ANTHROPIC_API_KEY` | Claude Messages API |
 | `openai` | `OPENAI_API_KEY` | Also fits Azure OpenAI / OpenRouter / vLLM via `OPENAI_BASE_URL` |
+| `codex` | Signed-in Codex CLI | Uses the local ChatGPT sign-in, no API key. Set `CODEX_MODEL` to a model available to your plan. Each request is an isolated, read-only Codex turn. |
 | `ollama` | nothing — local server | Free, offline, no rate limit. `ollama pull llama3.1`, then `LLM_PROVIDER=ollama` |
 | `stub` | nothing | Deterministic, offline, what every test and benchmark in this repo runs on |
 
@@ -590,10 +719,29 @@ detect it, and silently assuming a local server is running (and blocking on
 a connection attempt) would be the wrong kind of surprise — it has to be
 requested explicitly via `LLM_PROVIDER=ollama`.
 
-All four real providers share the same retry/backoff policy and token/cost
-accounting as the original Gemini path; none of them require their vendor's
-SDK — auth, request and response parsing are implemented directly against
-each API's plain HTTP contract in [orchestrator/llm.py](orchestrator/llm.py).
+For a ChatGPT-subscription demo, run `codex login` once, then
+`python scripts/use_engine.py codex` and restart the dashboard. This uses
+Codex CLI, not the OpenAI API or the Together gateway. It is subject to your
+ChatGPT plan's usage limits, and each model call starts a separate Codex turn.
+Switch back with `python scripts/use_engine.py together` and restart.
+
+For software tasks, the dashboard also offers `codex_agent`. Set
+`CODEX_AGENT_BACKEND=app-server` to use Codex's persistent thread and agent
+loop, or `CODEX_AGENT_BACKEND=exec` for one-off CLI turns. Both run in
+`workspace/<run-id>/` with a workspace-write sandbox. The dashboard action
+gate reviews the task before Codex runs. The app-server path streams progress
+into the workflow's activity feed and stores its thread ID in the workspace,
+so a later coding step or a follow-up run can resume it. The tool checks that
+a file-creation request really changed a file and keeps an event trace.
+`CODEX_AGENT_MODEL` selects a model for these longer turns; the default is
+`CODEX_MODEL`. Requests for extra permission inside a turn fail closed until
+the dashboard has an approval handler for them. Browser and desktop actions
+still use this project's own computer-use tools.
+
+The HTTP providers share retry/backoff and token/cost accounting. Codex CLI
+reports no per-call API charge here; its displayed token counts are estimates,
+not an account quota or billing report. Provider code is in
+[orchestrator/llm.py](orchestrator/llm.py).
 
 ---
 
@@ -616,6 +764,17 @@ each API's plain HTTP contract in [orchestrator/llm.py](orchestrator/llm.py).
 ---
 
 ## Live dashboard
+
+On Windows, the repository launcher verifies the configured provider and starts
+the complete local dashboard on port 8000:
+
+```powershell
+.\run.bat
+```
+
+Pass a different port as the first argument (for example, `.\run.bat 8001`) or
+use `.\run.bat --check` to verify the configured provider without starting a
+second server.
 
 ```bash
 python -m orchestrator.cli serve       # http://127.0.0.1:8000
@@ -758,6 +917,9 @@ uncovered remainder is credential-gated code that needs real accounts.
 | [09_api_connections.py](examples/09_api_connections.py) | Authenticated calls to any HTTP API (real httpbin requests) |
 | [10_skills.py](examples/10_skills.py) | Reference material matched into an agent's prompt |
 | [11_hermes_desktop.py](examples/11_hermes_desktop.py) | High-level Word task through the optional Hermes desktop worker |
+| [12_requirement_change.py](examples/12_requirement_change.py) | MongoDB → PostgreSQL; catches a step with no edge to the change |
+| [13_computer_use.py](examples/13_computer_use.py) | Browser/desktop control and every guard, in simulation |
+| [14_skill_discovery.py](examples/14_skill_discovery.py) | Search, review, approve — installs nothing without confirmation |
 
 ---
 
@@ -785,6 +947,120 @@ python -m orchestrator.cli bench  --repeats 5
 
 `--stub` on any command forces the offline LLM.
 
+## Computer use (browser and desktop)
+
+A step that must operate a real interface asks for the `computer_use`
+capability rather than naming a backend. The tool picks one:
+
+    browser (Playwright MCP)  →  desktop (native Windows, optional Hermes fallback)  →  nothing
+
+Browser first: anything inside a website is cheaper to drive, easier to
+observe, and can be restricted to a list of domains in a way that "control
+the computer" cannot.
+
+```bash
+ORCHESTRATOR_ALLOW_DESKTOP=1
+ORCHESTRATOR_COMPUTER_USE_ALLOW=example.com,notepad
+```
+
+Try it with no setup at all — `python examples/13_computer_use.py` runs in
+simulation and prints each guard refusing something.
+
+### It reads the screen between actions
+
+A plan for a real interface is written before anyone has seen the page, and
+every action after the first depends on where the earlier ones landed. Scripted
+plans therefore stop one action short of the goal all the time — "opened the
+search results" and then nothing — and a step that ends there reports a page it
+opened as though it were an answer.
+
+So `computer_use` runs a loop instead. The approved plan's own actions are the
+opening moves; when they run out, the page or desktop is observed and the
+next action chosen from what is actually there, until the goal is met or the
+limits are reached. A vision-capable model receives a fresh, downsized desktop
+screenshot on each turn alongside window titles and the action history. A
+text-only model can still use the window-title fallback, but cannot reliably
+locate arbitrary visual controls.
+
+```
+open the page  →  read it  →  choose the next action  →  do it  →  read it  →  …
+```
+
+That is what lets a consent banner, a redirect, a login, a renamed button or a
+search whose results have to be read be survived rather than end the step. A
+refused or failed action is handed back as an observation, so a mistyped label
+costs one turn instead of the whole run.
+
+This is a bounded agent, not a guarantee that every human software task will
+work. Tasks can still need a sign-in, unavailable tool, fresh permission, or
+human judgment. A request to write or draw cannot be marked complete after
+only launching an app; the action log must show the requested work happened.
+
+The model chooses *what* to do; it never chooses what is permitted. Every
+instruction goes through the same compiler and the same allow-list as a
+scripted one, so a steered run cannot reach further than an approved one. Give
+a goal with no actions — or set `"autonomous": true` — to skip the opening
+moves entirely. With no model attached, the plan is run exactly as written and
+nothing else, and the approval preview says which of the three you are getting.
+
+### What it can do
+
+Instructions are written the way a person would say them and compiled to typed
+calls. An unrecognised instruction is refused rather than skipped, because a
+silently dropped action is how a run reports work it never did.
+
+**In a browser** — click (also double, right, middle, ctrl/shift), type into a
+named field (optionally submitting), clear, select, check/uncheck, fill a whole
+form in one call, hover, drag, upload, accept/dismiss dialogs, scroll, press
+keys, wait for a time or for text to appear or disappear, find text on the
+page, screenshot (viewport or full page), open/switch/close tabs, go back and
+forward, reload, resize, read the console, read the network requests, close the
+browser.
+
+**On the desktop** — launch, focus, list windows, screenshot, locate something
+by describing it, click it (also double, right, middle, or at coordinates),
+move, drag, scroll, type, press keys, select all, copy/paste/cut, read the
+window's text, read and set the clipboard, minimise/maximise/restore/close a
+window, and wait.
+
+Controls are named by the text a person reads on them; the tool resolves the
+label to an element itself, and refuses a label that matches more than one
+thing rather than guessing which was meant.
+
+Two details worth knowing, because both were found by testing against the real
+thing rather than by reading a specification:
+
+- **Argument names follow the server, not this code.** Playwright MCP renamed
+  its element handle from `ref` to `target`, and made `scale`/`static`/`level`
+  required. Calls are adapted to the schema the connected server published at
+  discovery, so one compiler drives both old and current releases.
+- **Desktop typing goes through the clipboard.** Synthesised keystrokes carry
+  their character in `wScan`, and when injection outruns the application's
+  message pump the pending events all resolve to the most recent character.
+  The result is the right *number* of characters and the wrong *content* —
+  "the quick brown fox" arrives as "the nnnnnnnnnnn ggggggggggg" — which a step
+  that then saves the file reports as success. A paste cannot half-arrive. The
+  person's clipboard is saved and put back; `"method": "keystrokes"` forces the
+  old path for a control that refuses paste.
+
+### The rules it enforces
+
+| Rule | What happens |
+|---|---|
+| Off by default | Nothing runs until `ORCHESTRATOR_ALLOW_DESKTOP` is set |
+| Approval first | The tool is irreversible, so the plan is shown and approved before anything moves |
+| Name your targets | A step that does not say which sites or apps it touches is refused |
+| Allow-list | Targets outside it are refused; **unset permits nothing**, so forgetting fails closed |
+| No secrets | Passwords, card numbers, API keys and one-time codes are refused before the backend sees them — ask the person, or read from the vault at use time |
+| Bounded | Action and time limits stop a run that goes wrong |
+| Logged | Every action appends to `workspace/<run-id>/computer_use.log.jsonl` |
+| Steering is bounded too | A model-chosen action is compiled and allow-listed exactly like a scripted one, and a credential it invents is refused before it is typed |
+
+Subdomains are covered by a parent entry (`example.com` allows
+`www.example.com`) but lookalikes are not (`notexample.com` is refused).
+
+---
+
 ### Hermes desktop worker
 
 Hermes is an optional worker for outcomes that require ordinary desktop
@@ -811,8 +1087,13 @@ Everything is optional; copy [.env.example](.env.example) to `.env.local`.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `LLM_PROVIDER` | auto | Force `gemini`\|`anthropic`\|`openai`\|`ollama`\|`stub` |
-| `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | — | Auto-detected in that order; none set ⇒ offline stub |
+| `LLM_PROVIDER` | auto | Force `nvidia`\|`gemini`\|`anthropic`\|`openai`\|`ollama`\|`stub` |
+| `NVIDIA_API_KEY` | — | Auto-select NVIDIA when present; otherwise offline stub |
+| `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | — | Used only when the corresponding provider is selected |
+| `ORCHESTRATOR_CHANGE_AWARE` | `true` | Fact assumptions and owner-forced invalidation |
+| `ORCHESTRATOR_SEMANTIC_CUTOFF` | `false` | Enable unmeasured semantic cutoff for reasoning steps |
+| `ORCHESTRATOR_EQUIVALENCE_THRESHOLD` | `0.95` | Minimum cosine similarity before a text judge call |
+| `ORCHESTRATOR_PLAN_TOKEN_BUDGET` | `20000` | Limit the estimated plan tokens before execution |
 | `OLLAMA_MODEL` / `OLLAMA_BASE_URL` | `llama3.1` / `localhost:11434` | Only used when `LLM_PROVIDER=ollama` |
 | `ORCHESTRATOR_MAX_WORKERS` | `4` | Parallel step concurrency |
 | `ORCHESTRATOR_CONTEXT_BUDGET` | `1200` | Chars of each dependency's output passed downstream |

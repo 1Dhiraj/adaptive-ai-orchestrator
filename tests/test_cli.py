@@ -23,7 +23,8 @@ class TestParser:
         parser = build_parser()
         actions = [a for a in parser._actions if a.dest == "command"]
         assert set(actions[0].choices) == {"plan", "run", "resume", "runs", "demo",
-                                           "serve", "worker", "bench", "mcp", "connections", "skills"}
+                                           "serve", "worker", "bench", "mcp", "connections",
+                                           "skills", "change"}
 
     def test_missing_subcommand_exits(self):
         with pytest.raises(SystemExit):
