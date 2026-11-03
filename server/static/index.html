@@ -1303,7 +1303,7 @@ dialog::backdrop {
 <div>Orchestrator<small>Adaptive AI workspace</small></div></div>
 <button id="btn-new" class="primary">
 <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
-<path d="M12 5v14M5 12h14"/></svg> New task</button>
+<path d="M12 5v14M5 12h14"/></svg> New conversation</button>
 <div class="nav-label">WORKSPACE</div>
 <nav class="nav">
 <button data-view="home" class="active">
@@ -1356,6 +1356,7 @@ dialog::backdrop {
 <h1>What can I do for you?</h1>
 <p class="subtitle">Ask naturally. I’ll reply here while I work.</p></div>
 <div id="chat-thread" class="chat-thread" role="log" aria-live="polite" aria-label="Conversation"></div>
+<p id="chat-context" class="hint" hidden></p>
 <div class="composer chat-composer">
 <label class="screen-reader" for="desc">Message your assistant</label>
 <textarea id="desc" rows="2" placeholder="Ask me to create a file, use a website, or work on your desktop…"></textarea>
@@ -1425,7 +1426,8 @@ dialog::backdrop {
 <div class="eyebrow">YOUR TASK</div>
 <h1 class="task-title" id="task-title">Task details</h1>
 <p class="subtitle" id="task-subtitle"></p></div>
-<button id="btn-refresh" class="text-button">Refresh</button></div>
+<div class="row"><button id="btn-back-to-chat" class="text-button">← Back to conversation</button>
+<button id="btn-refresh" class="text-button">Refresh</button></div></div>
 <div class="task-toolbar">
 <button id="btn-run" class="primary" disabled>Start task</button>
 <button id="btn-resume" class="primary" disabled>Continue task</button>
@@ -1441,8 +1443,8 @@ dialog::backdrop {
 <h2>Conversation</h2>
 <div id="conversation-messages"></div>
 <div class="row" style="margin-top:12px">
-<input id="chat-next-task" class="grow" aria-label="Ask for a new task" placeholder="Ask me to do a new task…">
-<button class="primary" id="chat-next-send">New task</button></div>
+<input id="chat-next-task" class="grow" aria-label="Continue the conversation" placeholder="Ask a follow-up or give me another task…">
+<button class="primary" id="chat-next-send">Send in conversation</button></div>
 </div>
 <div id="attention-link" class="notice" hidden>
 <span>This task needs a connection before it can start.</span>
@@ -2278,6 +2280,7 @@ let taskSetupSignature = null;
 let chatReceipts = [];
 let chatTurns = [];
 let pendingChatTurn = null;
+let chatContextRunId = null;
 
 function chatOutcome(state) {
   const steps = state.steps || [];
@@ -2304,6 +2307,9 @@ function chatOutcome(state) {
 
 function renderChatThread() {
   const host = $("#chat-thread");
+  const context = chatTurns.find(turn => turn.runId === chatContextRunId);
+  $("#chat-context").hidden = !context;
+  $("#chat-context").textContent = context ? `Continuing: ${context.prompt}` : "";
   $("#view-home").classList.toggle("has-chat", chatTurns.length > 0);
   if (!chatTurns.length) {
     host.innerHTML = '<div class="chat-message agent"><span class="chat-avatar">AI</span><div class="chat-bubble">Hi. Tell me what you want done, and I’ll work on it here.</div></div>';
@@ -2342,7 +2348,8 @@ function saveChatHistory() {
 }
 
 async function answerChatFollowup(prompt) {
-  const latest = [...chatTurns].reverse().find(turn => turn.state);
+  const latest = chatTurns.find(turn => turn.runId === chatContextRunId)
+    || [...chatTurns].reverse().find(turn => turn.state);
   if (!latest) return false;
   const state = latest.state;
   const { reply, files } = chatOutcome(state);
@@ -2386,10 +2393,19 @@ async function restoreChatRuns() {
     } catch (_) { return null; } // deleted runs are dropped from this chat
   }));
   chatTurns = restored.filter(Boolean);
+  const savedContextRunId = sessionStorage.getItem("orchestrator_chat_context");
+  chatContextRunId = chatTurns.some(turn => turn.runId === savedContextRunId)
+    ? savedContextRunId : [...chatTurns].reverse().find(turn => turn.runId)?.runId || null;
   saveChatHistory();
   renderChatThread();
   const latest = [...chatTurns].reverse().find(turn => turn.state);
-  if (latest?.state?.busy) await selectRun(latest.runId, false);
+  if (latest?.state?.busy) {
+    const restoredContextRunId = chatContextRunId;
+    await selectRun(latest.runId, false);
+    chatContextRunId = restoredContextRunId;
+    if (chatContextRunId) sessionStorage.setItem("orchestrator_chat_context", chatContextRunId);
+    renderChatThread();
+  }
 }
 
 function addChatReceipt(message) {
@@ -2996,6 +3012,8 @@ function startNewWorkflow(resetChat = true) {
   // Deselect the current run so nothing carries over implicitly.
   if (socket) { socket.onclose = null; socket.close(); socket = null; }
   runId = null;
+  chatContextRunId = null;
+  if (resetChat) sessionStorage.removeItem("orchestrator_chat_context");
   snapshot = null;
   askSignature = null;
   setupSignature = null;
@@ -3080,6 +3098,8 @@ async function selectRun(id, openTask = true) {
   const state = await api(`/api/runs/${id}`);
   if (socket) { socket.onclose = null; socket.close(); socket = null; }
   runId = id;
+  chatContextRunId = id;
+  sessionStorage.setItem("orchestrator_chat_context", id);
   askSignature = null;
   setupSignature = null;
   taskSetupSignature = null;
@@ -3117,7 +3137,8 @@ async function doPlan(description, clarifications) {
   $("#home-chat-status").hidden = false;
   $("#home-chat-status").textContent = "AI: I’m making a plan for your task…";
   try {
-    const previousRunId = [...chatTurns].reverse().find(turn => turn.runId)?.runId || null;
+    const previousRunId = chatContextRunId
+      || [...chatTurns].reverse().find(turn => turn.runId)?.runId || null;
     const state = await api("/api/runs", {
       method: "POST",
       body: JSON.stringify({
@@ -3272,13 +3293,15 @@ $("#btn-plan").addEventListener("click", async () => {
 $("#chat-next-send").addEventListener("click", () => {
   const request = $("#chat-next-task").value.trim();
   if (!request) return;
-  startNewWorkflow();
+  $("#chat-next-task").value = "";
+  returnToConversation();
   $("#desc").value = request;
-  $("#btn-plan").click();
+  if (!pendingChatTurn && !$("#btn-plan").disabled) $("#btn-plan").click();
 });
 $("#chat-next-task").addEventListener("keydown", event => {
   if (event.key === "Enter") { event.preventDefault(); $("#chat-next-send").click(); }
 });
+$("#btn-back-to-chat").addEventListener("click", returnToConversation);
 
 $("#btn-run").addEventListener("click", async () => {
   if (!runId || snapshot?.busy) return;
@@ -3434,6 +3457,19 @@ function showView(view) {
   if (view === "connections") refreshSetup();
   if (view === "tasks") refreshRuns().catch(err => notifyError(err.message));
   window.scrollTo({top:0, behavior:"instant"});
+}
+function returnToConversation() {
+  if (runId && snapshot && !chatTurns.some(turn => turn.runId === runId)) {
+    chatTurns.push({prompt: snapshot.description || "Task", runId, state: snapshot});
+    saveChatHistory();
+  }
+  if (runId) {
+    chatContextRunId = runId;
+    sessionStorage.setItem("orchestrator_chat_context", runId);
+  }
+  renderChatThread();
+  showView("home");
+  $("#desc").focus();
 }
 function setTaskTab(tab) {
   for (const name of ["plan", "results", "activity"]) $("#tab-" + name).hidden = name !== tab;
