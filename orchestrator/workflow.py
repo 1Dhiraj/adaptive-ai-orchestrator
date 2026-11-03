@@ -157,6 +157,7 @@ class Workflow:
         token_budget: Optional[int] = None,
         change_llm: Optional[LLMProvider] = None,
         judge_llm: Optional[LLMProvider] = None,
+        workspace_tools: bool = False,
     ):
         if graph is None:
             graph = DependencyGraph(steps or [])
@@ -199,7 +200,12 @@ class Workflow:
         from .tools.computer_use import ComputerUseTool
 
         if isinstance(self.tools.get("computer_use"), ComputerUseTool):
-            self.tools.register(ComputerUseTool(self.run_id, tools=self.tools))
+            # The model is what lets it work a goal out from what the screen
+            # shows, instead of only replaying steps written before anyone
+            # had seen the page.
+            self.tools.register(ComputerUseTool(
+                self.run_id, tools=self.tools,
+                llm=provider_for_role(self.llm, "computer_operator")))
         from .tools.computer_task import ComputerTaskTool
         from .tools.desktop import DesktopTool
 
@@ -215,13 +221,19 @@ class Workflow:
         if isinstance(self.tools.get("artifact_store"), ArtifactStoreTool):
             self.tools.register(ArtifactStoreTool(self.run_id))
         from .planner import is_software_task
-        if is_software_task(self.description):
+        if is_software_task(self.description) or workspace_tools:
             from .tools.workspace import coding_team_tools
             for coding_tool in coding_team_tools(self.run_id):
                 self.tools.register(coding_tool)
         self.agents = agent_manager or AgentManager(llm=self.llm)
         self.memory = memory or MemoryManager()
         self.bus = bus or EventBus()
+        from .tools.codex_agent import CodexAgentTool
+
+        codex_tool = self.tools.get("codex_agent")
+        if isinstance(codex_tool, CodexAgentTool):
+            codex_tool.progress_callback = lambda step_id, message: self.bus.publish(
+                EventType.LOG, run_id=self.run_id, step_id=step_id, message=message)
         #: Input name -> whether answering it should export an environment
         #: variable. Populated by ask_for_missing_requirements(); a supplied
         #: credential has to reach os.environ or the tool stays simulated.
@@ -277,7 +289,8 @@ class Workflow:
             self.state = state or StateManager()
             self.bus.subscribe(self.state.subscriber())
             self.state.create_run(self.run_id, description, self.graph,
-                                  meta={"parallel": parallel, "max_workers": self.max_workers})
+                                  meta={"parallel": parallel, "max_workers": self.max_workers,
+                                        "workspace_tools": workspace_tools})
 
         if verbose:
             self.bus.subscribe(console_printer())
@@ -289,6 +302,7 @@ class Workflow:
     @classmethod
     def from_description(cls, description: str, mcp_config: Optional[str] = None,
                          clarifications: Optional[Dict[str, Any]] = None,
+                         extra_guidance: str = "", force_workspace: bool = False,
                          **kwargs: Any) -> "Workflow":
         """Plan a workflow straight from plain English.
 
@@ -310,7 +324,7 @@ class Workflow:
 
         # The planner can only assign tools it sees. Attach the run-scoped
         # workspace and restricted terminal before planning software work.
-        if is_software_task(description):
+        if is_software_task(description) or force_workspace:
             planned_run_id = kwargs.get("run_id") or new_run_id()
             kwargs["run_id"] = planned_run_id
             from .tools.workspace import coding_team_tools
@@ -325,7 +339,10 @@ class Workflow:
             pre_attached = registry.attach(tools, config_path=mcp_config)
 
         plan = TaskPlanner(llm=llm).plan(description, tools=tools,
-                                         clarifications=clarifications)
+                                         clarifications=clarifications,
+                                         extra_guidance=extra_guidance)
+        if force_workspace:
+            kwargs["workspace_tools"] = True
         workflow = cls(graph=plan.graph, description=description, **kwargs)
         if mcp_config:
             workflow._mcp = registry  # so close() shuts the servers down
@@ -373,6 +390,7 @@ class Workflow:
         if graph is None:
             raise KeyError(f"no persisted run with id '{run_id}'")
         record = state.get_run(run_id) or {}
+        kwargs.setdefault("workspace_tools", record.get("meta", {}).get("workspace_tools", False))
         workflow = cls(graph=graph, description=record.get("description", ""),
                        run_id=run_id, state=state, **kwargs)
         workflow.load_persisted_results()
@@ -1126,6 +1144,21 @@ class Workflow:
         result.tool_requested = action.tool
         result.input_hash = self._input_hash(step)
 
+        # Say it is working the moment it starts, not when it finishes. A
+        # browser task can run for minutes, and until this was published the
+        # step kept the status it had while it was queued -- so a dashboard
+        # showed "waiting for approval" for the whole time it was actually
+        # doing the thing that had just been approved. Every person who saw
+        # that reasonably concluded their approval had not registered, and
+        # clicked approve again.
+        with self._lock:
+            result.status = StepStatus.RUNNING
+            self.results[action.step_id] = result
+        self._persist(result)
+        self.bus.publish(EventType.STEP_STARTED, run_id=self.run_id,
+                         step_id=action.step_id,
+                         message=f"approved; running {action.tool}")
+
         try:
             import inspect
 
@@ -1367,8 +1400,9 @@ class Workflow:
         ``new_requirement`` asks the planner to fold a change into it.
         Supplying neither just invalidates the step as-is.
         """
-        if step_id not in self.graph:
-            raise KeyError(f"no such step: '{step_id}'")
+        # A near miss should land on the step the person meant, not on a
+        # KeyError: they are typing an id the planner invented this run.
+        step_id = self.graph.resolve_id(step_id)
         step = self.graph.get(step_id)
 
         if new_description:

@@ -255,9 +255,48 @@ class Agent:
             outcome.deferred_tool = tool_name
             return outcome
 
-        outcome.tool_invocation = self.call_tool(
-            step, tool_name, response.text, tool_manager, workflow_inputs,
-            upstream_context=context)
+        from .tools.workspace import WorkspaceError, workspace_requires_write
+
+        if tool_name == "workspace" and workspace_requires_write(step.description):
+            from .tools.base import ToolUnavailableError
+
+            feedback = ""
+            for attempt in range(3):
+                try:
+                    invocation = self.call_tool(
+                        step, tool_name, response.text, tool_manager, workflow_inputs,
+                        upstream_context=context)
+                except ToolUnavailableError as exc:
+                    feedback = str(exc)
+                    if attempt == 2:
+                        raise WorkspaceError(feedback) from exc
+                else:
+                    outcome.tool_invocation = invocation
+                    if (invocation.tool_used == "workspace"
+                            and invocation.output.startswith("[workspace] wrote ")):
+                        break
+                    feedback = invocation.output
+                    if attempt == 2:
+                        raise WorkspaceError(
+                            "workspace task did not write a file; it only read or listed files")
+                followup = provider.generate(
+                    prompt + "\n\nThe workspace tool returned this result or error:\n"
+                    + feedback[:8000]
+                    + "\n\nThe task is not complete. Write the finished file now. "
+                      "Use TOOL_DIRECTIVE with action write, the same relative path, "
+                      "and the full updated content. Correct the issue above.",
+                    system=self.build_system_prompt(),
+                    metadata={"role": self.role, "step_id": step.id},
+                )
+                outcome.usage = outcome.usage + followup.usage
+                if gate is not None and not gate(step, tool_name, followup.text):
+                    outcome.deferred_tool = tool_name
+                    return outcome
+                response = followup
+        else:
+            outcome.tool_invocation = self.call_tool(
+                step, tool_name, response.text, tool_manager, workflow_inputs,
+                upstream_context=context)
         outcome.output = self.merge_tool_result(response.text, tool_name,
                                                 outcome.tool_invocation)
         return outcome
@@ -306,6 +345,7 @@ class Agent:
         # instructions. The verified tool result is the user-facing evidence.
         if requested_tool in {
             "computer_use", "desktop_native", "hermes_desktop", "adaptive_email",
+            "codex_agent",
         }:
             agent_output = ""
         separator = "\n\n---\n" if agent_output else ""

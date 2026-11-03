@@ -394,3 +394,85 @@ class TestCapabilityIsolation:
             assert all(t.capability == "notify" for t in tools)
         finally:
             tools[0]._connection.close()
+
+
+class TestSessionRecovery:
+    """A dropped pipe is a reason to reconnect, not to fail the step.
+
+    The session is a long-lived subprocess. Anything that kills it -- a crash,
+    a stray process cleanup, a machine waking from sleep -- used to surface as
+    a failed step, sometimes with an empty message, because the exception
+    carried no text of its own. "MCP call to 'playwright' failed: " tells
+    nobody anything.
+    """
+
+    def connection(self, monkeypatch, failures):
+        from orchestrator.tools.mcp import McpConnection, McpServerSpec
+
+        spec = McpServerSpec(name="flaky", command="noop")
+        conn = McpConnection(spec)
+        calls = {"connects": 0, "closes": 0, "attempts": 0}
+
+        def fake_connect():
+            calls["connects"] += 1
+
+        def fake_close(timeout=5.0):
+            calls["closes"] += 1
+
+        def fake_run(coro, loop):
+            calls["attempts"] += 1
+
+            class Future:
+                def result(self, _timeout):
+                    if calls["attempts"] <= failures:
+                        raise ConnectionResetError("the pipe was closed")
+                    return "recovered"
+
+                def cancel(self):
+                    pass
+
+            return Future()
+
+        monkeypatch.setattr(conn, "connect", fake_connect)
+        monkeypatch.setattr(conn, "close", fake_close)
+        monkeypatch.setattr("orchestrator.tools.mcp.asyncio.run_coroutine_threadsafe",
+                            fake_run)
+        conn._loop, conn._session = object(), object()
+        return conn, calls
+
+    def test_one_dropped_connection_is_recovered_silently(self, monkeypatch):
+        conn, calls = self.connection(monkeypatch, failures=1)
+        assert conn._call_session(lambda s: None) == "recovered"
+        assert calls["closes"] == 1          # it reopened the pipe
+        assert calls["attempts"] == 2        # and tried again exactly once
+
+    def test_it_does_not_retry_forever(self, monkeypatch):
+        from orchestrator.tools.base import ToolError
+
+        conn, calls = self.connection(monkeypatch, failures=99)
+        with pytest.raises(ToolError, match="pipe was closed"):
+            conn._call_session(lambda s: None)
+        assert calls["attempts"] == 2        # one retry, then report honestly
+
+    def test_an_exception_with_no_message_still_says_something(self, monkeypatch):
+        from orchestrator.tools.base import ToolError
+        from orchestrator.tools.mcp import McpConnection, McpServerSpec
+
+        conn = McpConnection(McpServerSpec(name="silent", command="noop"))
+        monkeypatch.setattr(conn, "connect", lambda: None)
+
+        class Future:
+            def result(self, _timeout):
+                raise ValueError("")          # no message at all
+
+            def cancel(self):
+                pass
+
+        monkeypatch.setattr("orchestrator.tools.mcp.asyncio.run_coroutine_threadsafe",
+                            lambda coro, loop: Future())
+        conn._loop, conn._session = object(), object()
+
+        with pytest.raises(ToolError) as caught:
+            conn._call_session(lambda s: None)
+        # Never "failed: " with nothing after it.
+        assert "ValueError with no message" in str(caught.value)

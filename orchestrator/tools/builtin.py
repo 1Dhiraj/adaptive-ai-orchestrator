@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..config import PROJECT_ROOT, settings
-from .base import Tool, ToolError, ToolManager
+from .base import Tool, ToolError, ToolManager, extract_directive
 
 ARTIFACT_DIR = PROJECT_ROOT / "artifacts"
 
@@ -41,14 +41,7 @@ def _directive(task: str) -> Dict[str, Any]:
     Lets an agent steer a tool ("open a PR" vs "create an issue") without the
     orchestrator needing to know anything about that tool's operations.
     """
-    match = re.search(r"TOOL_DIRECTIVE:\s*(\{.*?\})\s*$", task, re.MULTILINE | re.DOTALL)
-    if not match:
-        return {}
-    try:
-        parsed = json.loads(match.group(1))
-        return parsed if isinstance(parsed, dict) else {}
-    except json.JSONDecodeError:
-        return {}
+    return extract_directive(task)
 
 
 def _http(method: str, url: str, *, headers: Optional[dict] = None,

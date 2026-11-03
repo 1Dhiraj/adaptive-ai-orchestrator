@@ -35,7 +35,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .base import Tool, ToolError
+from .base import Tool, ToolError, extract_directive
 from .workspace import (DEFAULT_WORKSPACE_ROOT, check_command, safe_environment,
                         workspace_for)
 
@@ -110,15 +110,9 @@ class ComputerTaskTool(Tool):
 
     @staticmethod
     def _goal(task: str) -> str:
-        match = re.search(r"TOOL_DIRECTIVE:\s*(\{.*\})\s*$", task or "", re.S | re.M)
-        if match:
-            try:
-                parsed = json.loads(match.group(1))
-                args = parsed.get("arguments", parsed) if isinstance(parsed, dict) else {}
-                if isinstance(args, dict) and args.get("goal"):
-                    return str(args["goal"])
-            except ValueError:
-                pass
+        arguments = extract_directive(task)
+        if arguments.get("goal"):
+            return str(arguments["goal"])
         # No directive: the step's own words are the goal.
         return re.split(r"^TOOL_DIRECTIVE:", task or "", flags=re.M)[0].strip()
 

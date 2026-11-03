@@ -17,6 +17,7 @@ import hashlib
 import os
 import re
 import secrets
+import shutil
 import threading
 import base64
 import urllib.parse
@@ -294,6 +295,7 @@ class ClarifyTask(BaseModel):
 class CreateRun(BaseModel):
     description: str = Field(..., min_length=3, description="Plain-English project description")
     run_id: Optional[str] = None
+    previous_run_id: Optional[str] = None
     #: Answers to the clarification questions, folded into the planning prompt.
     clarifications: Dict[str, Any] = Field(default_factory=dict)
     parallel: bool = True
@@ -570,10 +572,22 @@ async def dashboard() -> Any:
 
 @app.get("/api/health")
 async def health() -> Dict[str, Any]:
-    return {"ok": True, "version": app.version,
+    from orchestrator.llm import LLMError, get_provider
+
+    config = _config.settings.describe()
+    try:
+        provider = get_provider()
+        config["active_provider"] = provider.name
+        config["model"] = provider.model
+        config["provider_ready"] = True
+    except LLMError as exc:
+        config["active_provider"] = "unavailable"
+        config["provider_ready"] = False
+        config["provider_error"] = str(exc)
+    return {"ok": config["provider_ready"], "version": app.version,
             "api_auth_required": _auth_configured(),
             "role_access": ["viewer", "operator", "admin"],
-            "config": _config.settings.describe()}
+            "config": config}
 
 
 @app.get("/metrics", include_in_schema=False)
@@ -858,6 +872,32 @@ async def clarify_task(body: ClarifyTask) -> Dict[str, Any]:
 @app.post("/api/runs", status_code=201)
 async def create_run(body: CreateRun) -> Dict[str, Any]:
     tools = await asyncio.to_thread(_planning_tools)
+    previous_root = None
+    previous_files: List[str] = []
+    extra_guidance = ""
+    if body.previous_run_id:
+        if body.previous_run_id == body.run_id:
+            raise HTTPException(status_code=400, detail="a follow-up needs a new run ID")
+        previous = manager.get(body.previous_run_id)
+        previous_root = _run_workspace(previous)
+        if previous_root and previous_root.is_dir():
+            copied_bytes = 0
+            for entry in _workspace_files(previous):
+                if len(previous_files) >= 30:
+                    break
+                if (entry["size"] > 2_000_000 or copied_bytes + entry["size"] > 8_000_000
+                        or entry["path"].endswith(".log.jsonl")
+                        or (previous_root / entry["path"]).is_symlink()):
+                    continue
+                previous_files.append(entry["path"])
+                copied_bytes += entry["size"]
+        extra_guidance = (
+            "This message continues the person's previous task. Use its context when words such as "
+            "'it' or 'that file' refer to earlier work. Earlier request: "
+            f"{previous.description[:1000]}\n"
+            "Files copied into this run's workspace (relative paths): "
+            + (", ".join(previous_files) if previous_files else "none")
+        )
     try:
         workflow = await asyncio.to_thread(
             Workflow.from_description,
@@ -870,13 +910,25 @@ async def create_run(body: CreateRun) -> Dict[str, Any]:
             state=manager.state,
             verbose=False,
             tool_manager=tools,
+            extra_guidance=extra_guidance,
+            force_workspace=bool(previous_files),
         )
     except Exception as exc:
         from orchestrator.planner import PlanningError
+        from orchestrator.llm import LLMError
 
-        if isinstance(exc, PlanningError):
+        if isinstance(exc, (PlanningError, LLMError)):
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         raise
+    if previous_root and previous_files:
+        target_root = _run_workspace(workflow)
+        if target_root:
+            for relative in previous_files:
+                source = previous_root / relative
+                target = target_root / relative
+                if source.is_file() and not source.is_symlink() and source.stat().st_size <= 2_000_000:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, target)
     _attach_configured_extras(workflow)
     if body.ask_for_requirements:
         # After the extras are attached, so tools registered above count as

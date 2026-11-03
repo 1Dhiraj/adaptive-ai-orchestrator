@@ -555,8 +555,35 @@ wf.attach_skills("skills")          # explicit, like MCP — never auto-scanned
 wf.skills.match(some_step)          # what would apply, without running anything
 ```
 
-Three shipped examples: `api-design-conventions` (backend), `writing-style`
-(writer), `incident-postmortem` (devops/reviewer, keyword-triggered).
+Six shipped examples. Three are house-style samples —
+`api-design-conventions` (backend), `writing-style` (writer),
+`incident-postmortem` (devops/reviewer, keyword-triggered). Three carry the
+procedures for real-interface work, and activate on any step that mentions
+them: `browser-tasks`, `desktop-tasks` and `web-research`. They are what stops
+a browser step reporting "opened the page" as though it were an answer.
+
+### `skill.sh`
+
+Matching is implicit — by role and keyword, never wired up per step — so the
+two questions that actually come up are "is this file valid?" and "which steps
+will this fire on?". Both are answered without a Python session:
+
+```bash
+./skill.sh list                       # every skill, and what it matches on
+./skill.sh show browser-tasks         # one skill in full
+./skill.sh validate                   # parse them all; non-zero if any fail
+./skill.sh match "Open github.com and click Issues"    # which ones would apply
+./skill.sh render "research python releases"           # the exact prompt block
+./skill.sh new my-skill               # scaffold a new one
+./skill.sh test                       # run the skill test suite
+```
+
+`validate` also warns about the mistakes that are invisible at runtime: a
+skill with no `roles` and no `keywords` is injected into *every* step, and one
+over 4000 characters is silently truncated when it gets there.
+
+Runs under Git Bash, WSL, macOS and Linux. On Windows without a shell, the same
+library is one import away: `from orchestrator.skills import SkillLibrary`.
 
 ---
 
@@ -683,6 +710,7 @@ wf = Workflow(steps, llm=build_provider("openai"))
 | `gemini` | `GEMINI_API_KEY` | Select explicitly |
 | `anthropic` | `ANTHROPIC_API_KEY` | Claude Messages API |
 | `openai` | `OPENAI_API_KEY` | Also fits Azure OpenAI / OpenRouter / vLLM via `OPENAI_BASE_URL` |
+| `codex` | Signed-in Codex CLI | Uses the local ChatGPT sign-in, no API key. Set `CODEX_MODEL` to a model available to your plan. Each request is an isolated, read-only Codex turn. |
 | `ollama` | nothing — local server | Free, offline, no rate limit. `ollama pull llama3.1`, then `LLM_PROVIDER=ollama` |
 | `stub` | nothing | Deterministic, offline, what every test and benchmark in this repo runs on |
 
@@ -691,10 +719,29 @@ detect it, and silently assuming a local server is running (and blocking on
 a connection attempt) would be the wrong kind of surprise — it has to be
 requested explicitly via `LLM_PROVIDER=ollama`.
 
-All four real providers share the same retry/backoff policy and token/cost
-accounting as the original Gemini path; none of them require their vendor's
-SDK — auth, request and response parsing are implemented directly against
-each API's plain HTTP contract in [orchestrator/llm.py](orchestrator/llm.py).
+For a ChatGPT-subscription demo, run `codex login` once, then
+`python scripts/use_engine.py codex` and restart the dashboard. This uses
+Codex CLI, not the OpenAI API or the Together gateway. It is subject to your
+ChatGPT plan's usage limits, and each model call starts a separate Codex turn.
+Switch back with `python scripts/use_engine.py together` and restart.
+
+For software tasks, the dashboard also offers `codex_agent`. Set
+`CODEX_AGENT_BACKEND=app-server` to use Codex's persistent thread and agent
+loop, or `CODEX_AGENT_BACKEND=exec` for one-off CLI turns. Both run in
+`workspace/<run-id>/` with a workspace-write sandbox. The dashboard action
+gate reviews the task before Codex runs. The app-server path streams progress
+into the workflow's activity feed and stores its thread ID in the workspace,
+so a later coding step or a follow-up run can resume it. The tool checks that
+a file-creation request really changed a file and keeps an event trace.
+`CODEX_AGENT_MODEL` selects a model for these longer turns; the default is
+`CODEX_MODEL`. Requests for extra permission inside a turn fail closed until
+the dashboard has an approval handler for them. Browser and desktop actions
+still use this project's own computer-use tools.
+
+The HTTP providers share retry/backoff and token/cost accounting. Codex CLI
+reports no per-call API charge here; its displayed token counts are estimates,
+not an account quota or billing report. Provider code is in
+[orchestrator/llm.py](orchestrator/llm.py).
 
 ---
 
@@ -905,7 +952,7 @@ python -m orchestrator.cli bench  --repeats 5
 A step that must operate a real interface asks for the `computer_use`
 capability rather than naming a backend. The tool picks one:
 
-    browser (Playwright MCP)  →  desktop (Hermes)  →  nothing
+    browser (Playwright MCP)  →  desktop (native Windows, optional Hermes fallback)  →  nothing
 
 Browser first: anything inside a website is cheaper to drive, easier to
 observe, and can be restricted to a list of domains in a way that "control
@@ -919,6 +966,83 @@ ORCHESTRATOR_COMPUTER_USE_ALLOW=example.com,notepad
 Try it with no setup at all — `python examples/13_computer_use.py` runs in
 simulation and prints each guard refusing something.
 
+### It reads the screen between actions
+
+A plan for a real interface is written before anyone has seen the page, and
+every action after the first depends on where the earlier ones landed. Scripted
+plans therefore stop one action short of the goal all the time — "opened the
+search results" and then nothing — and a step that ends there reports a page it
+opened as though it were an answer.
+
+So `computer_use` runs a loop instead. The approved plan's own actions are the
+opening moves; when they run out, the page or desktop is observed and the
+next action chosen from what is actually there, until the goal is met or the
+limits are reached. A vision-capable model receives a fresh, downsized desktop
+screenshot on each turn alongside window titles and the action history. A
+text-only model can still use the window-title fallback, but cannot reliably
+locate arbitrary visual controls.
+
+```
+open the page  →  read it  →  choose the next action  →  do it  →  read it  →  …
+```
+
+That is what lets a consent banner, a redirect, a login, a renamed button or a
+search whose results have to be read be survived rather than end the step. A
+refused or failed action is handed back as an observation, so a mistyped label
+costs one turn instead of the whole run.
+
+This is a bounded agent, not a guarantee that every human software task will
+work. Tasks can still need a sign-in, unavailable tool, fresh permission, or
+human judgment. A request to write or draw cannot be marked complete after
+only launching an app; the action log must show the requested work happened.
+
+The model chooses *what* to do; it never chooses what is permitted. Every
+instruction goes through the same compiler and the same allow-list as a
+scripted one, so a steered run cannot reach further than an approved one. Give
+a goal with no actions — or set `"autonomous": true` — to skip the opening
+moves entirely. With no model attached, the plan is run exactly as written and
+nothing else, and the approval preview says which of the three you are getting.
+
+### What it can do
+
+Instructions are written the way a person would say them and compiled to typed
+calls. An unrecognised instruction is refused rather than skipped, because a
+silently dropped action is how a run reports work it never did.
+
+**In a browser** — click (also double, right, middle, ctrl/shift), type into a
+named field (optionally submitting), clear, select, check/uncheck, fill a whole
+form in one call, hover, drag, upload, accept/dismiss dialogs, scroll, press
+keys, wait for a time or for text to appear or disappear, find text on the
+page, screenshot (viewport or full page), open/switch/close tabs, go back and
+forward, reload, resize, read the console, read the network requests, close the
+browser.
+
+**On the desktop** — launch, focus, list windows, screenshot, locate something
+by describing it, click it (also double, right, middle, or at coordinates),
+move, drag, scroll, type, press keys, select all, copy/paste/cut, read the
+window's text, read and set the clipboard, minimise/maximise/restore/close a
+window, and wait.
+
+Controls are named by the text a person reads on them; the tool resolves the
+label to an element itself, and refuses a label that matches more than one
+thing rather than guessing which was meant.
+
+Two details worth knowing, because both were found by testing against the real
+thing rather than by reading a specification:
+
+- **Argument names follow the server, not this code.** Playwright MCP renamed
+  its element handle from `ref` to `target`, and made `scale`/`static`/`level`
+  required. Calls are adapted to the schema the connected server published at
+  discovery, so one compiler drives both old and current releases.
+- **Desktop typing goes through the clipboard.** Synthesised keystrokes carry
+  their character in `wScan`, and when injection outruns the application's
+  message pump the pending events all resolve to the most recent character.
+  The result is the right *number* of characters and the wrong *content* —
+  "the quick brown fox" arrives as "the nnnnnnnnnnn ggggggggggg" — which a step
+  that then saves the file reports as success. A paste cannot half-arrive. The
+  person's clipboard is saved and put back; `"method": "keystrokes"` forces the
+  old path for a control that refuses paste.
+
 ### The rules it enforces
 
 | Rule | What happens |
@@ -930,6 +1054,7 @@ simulation and prints each guard refusing something.
 | No secrets | Passwords, card numbers, API keys and one-time codes are refused before the backend sees them — ask the person, or read from the vault at use time |
 | Bounded | Action and time limits stop a run that goes wrong |
 | Logged | Every action appends to `workspace/<run-id>/computer_use.log.jsonl` |
+| Steering is bounded too | A model-chosen action is compiled and allow-listed exactly like a scripted one, and a credential it invents is refused before it is typed |
 
 Subdomains are covered by a parent entry (`example.com` allows
 `www.example.com`) but lookalikes are not (`notexample.com` is refused).

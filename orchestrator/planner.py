@@ -148,7 +148,11 @@ TASKS:
 - A simple browser or desktop instruction is ONE computer_use task. Put the
   target sites/apps and concrete actions in its description; do not add
   separate planning or verification prose steps unless they produce a real
-  deliverable.
+  deliverable. computer_use reads the page or the window after each action and
+  works out the next one itself, so a task whose steps cannot be known until
+  something is on screen -- a search whose results must be read, a login, a
+  consent banner, a multi-page form -- is still ONE task. Say what the task
+  must achieve, not the clicks you imagine it will take.
 - A requested file is a real deliverable. If the person asks for a PDF, the
   final task must use artifact_store with an artifacts/*.pdf path and depend
   on every step whose output belongs in the document. Opening/searching a
@@ -156,27 +160,135 @@ TASKS:
 - Descriptions state the deliverable, not the process.
 - Use condition only for a real branch. Its source must be a dependency's id
   or trigger.field for webhook data. Omit condition for normal tasks.
-- For software projects, steps that create or edit code should use workspace;
-  build/test commands should be separate terminal steps. Use github only when
-  the request actually asks to publish or modify a remote repository.
+- For software projects, prefer codex_agent when it is available. It runs the
+  signed-in Codex agent's file-editing and command loop in the run workspace,
+  so one implementation step can create code, test it, and report real files.
+  Use workspace and terminal for smaller independent file or command steps,
+  or when codex_agent is unavailable. Use github only when the request actually
+  asks to publish or modify a remote repository.
 """
 
 
 SOFTWARE_TASK_PATTERN = re.compile(
     r"\b(?:web|mobile|desktop)\s+app(?:lication)?\b|\bwebsite\b|\bsoftware\b|"
+    r"\b(?:html|css|javascript|typescript)\s+(?:page|site|website|app|file)\b|"
+    r"\b(?:create|build|make)\b.{0,45}\b(?:html|webpage)\b|\.html?\b|"
     r"\b(?:frontend|backend|full[ -]?stack|api|microservice|codebase)\b|"
     r"\b(?:build|develop|implement|create|write)\b.{0,50}\b"
     r"(?:app|application|system|platform|portal|dashboard|cli|command[ -]?line|"
-    r"script|program|package|library)\b|"
+    r"script|program|package|library|"
+    # Ordinary names for software that say nothing about being software.
+    # Missing these does not merely misclassify: the coding tools are never
+    # attached, so every step that needed to write a file dies with
+    # "workspace: not registered" after the plan has already been paid for.
+    r"manager|tracker|service|micro-?service|bot|chat-?bot|site|server|"
+    r"editor|scraper|crawler|pipeline|tool|shortener|engine|queue|parser|"
+    r"converter|clone|game|extension|plugin|widget)\b|"
     r"\b(?:python|javascript|typescript|java|rust|golang|c\+\+)\b.{0,45}\b"
     r"(?:cli|command[ -]?line|script|program|tool|app|application)\b",
     re.IGNORECASE,
 )
 
 
+
+def _interface_kind(description: str) -> str:
+    """"web", "desktop", or "" when the description does not say.
+
+    Used only to keep a browser step and a desktop step from being merged into
+    one: a single ``computer_use`` call picks one backend, so a merged step
+    would silently drop half of what it was asked to do.
+    """
+    from .tools.computer_use import _looks_like_web_target, _target_from_description
+
+    target = _target_from_description(description or "")
+    if not target:
+        return ""
+    return "web" if _looks_like_web_target(target) else "desktop"
+
+
+def merge_interface_chains(steps: List[Step], repairs: List[str]) -> List[Step]:
+    """Collapse a chain of ``computer_use`` steps into the first of them.
+
+    Browser and desktop state does not survive a step boundary. Every
+    ``computer_use`` step opens its own page or raises its own window, so a
+    plan that splits one interface task into "navigate to the page" then
+    "select the option" does not merely waste a model call -- the second step
+    re-navigates, and everything the first step did (what was typed, which tab
+    was open, how far it had scrolled, whether it had signed in) is gone before
+    the second one starts.
+
+    Planner prompts ask for one task per interface instruction, and models
+    comply most of the time. This makes it structural rather than requested:
+    a chain that would have thrown away its own progress is welded back into
+    a single step, whose loop then carries one live session throughout.
+
+    Only a genuine chain is merged -- B depends on A alone, nothing else
+    depends on A, neither asks the operator anything, neither is conditional,
+    and both drive the same kind of interface.
+    """
+    merged = True
+    while merged:
+        merged = False
+        dependents: Dict[str, List[Step]] = {}
+        for step in steps:
+            for dependency in step.depends_on:
+                dependents.setdefault(dependency, []).append(step)
+        by_id = {step.id: step for step in steps}
+
+        for first in list(steps):
+            if first.requires_tool != "computer_use" or first.condition:
+                continue
+            followers = dependents.get(first.id, [])
+            if len(followers) != 1:
+                continue
+            second = followers[0]
+            if (second.requires_tool != "computer_use"
+                    or second.depends_on != [first.id]
+                    or second.condition or second.inputs or first.inputs):
+                continue
+            kinds = {_interface_kind(first.description),
+                     _interface_kind(second.description)} - {""}
+            if len(kinds) > 1:
+                continue
+            if len(first.description) + len(second.description) > 900:
+                continue
+
+            first.description = f"{first.description.rstrip('. ')}. Then: {second.description}"
+            if second.output_type and second.output_type != "text":
+                first.output_type = second.output_type
+            first.assumes = list(dict.fromkeys(
+                list(first.assumes) + list(second.assumes)))
+            for other in steps:
+                if other is second:
+                    continue
+                if second.id in other.depends_on:
+                    other.depends_on = list(dict.fromkeys([
+                        first.id if d == second.id else d for d in other.depends_on]))
+            steps = [step for step in steps if step.id is not second.id]
+            repairs.append(
+                f"merged '{second.id}' into '{first.id}': a browser/desktop "
+                "session does not survive a step boundary, so splitting them "
+                "would have re-opened the page and lost the first step's work")
+            merged = True
+            break
+    return steps
+
+
 def is_software_task(description: str) -> bool:
     """Conservative check used to attach opt-in coding tools before planning."""
     return bool(SOFTWARE_TASK_PATTERN.search(description or ""))
+
+
+def requires_action_tool(description: str) -> bool:
+    """A real app, site, or saved artifact cannot be completed by prose alone."""
+    text = description or ""
+    action = re.search(r"\b(open|launch|draw|type|click|save|create|write|build|make|edit|modify|run|scrape)\b",
+                       text, re.IGNORECASE)
+    target = re.search(
+        r"\b(paint|notepad|vscode|vs code|word|excel|powerpoint|browser|website|web app)\b"
+        r"|https?://|\b[\w.-]+\.(?:txt|md|html|css|js|py|pdf|png|jpg|docx|xlsx|pptx)\b",
+        text, re.IGNORECASE)
+    return bool(action and (target or is_software_task(text)))
 
 
 CLARIFIER_SYSTEM_PROMPT = """You are about to plan a task. First decide whether
@@ -544,6 +656,11 @@ class TaskPlanner:
         graph, graph_repairs = self.build_graph(parsed["tasks"], declared_roles, available)
         repairs.extend(graph_repairs)
         _ensure_requested_artifacts(graph, project_description, repairs)
+        if requires_action_tool(project_description) and not any(
+                step.requires_tool for step in graph.steps.values()):
+            raise PlanningError(
+                "The AI returned a plan with no action tool for a task that must use an app, "
+                "website, or file. Nothing was started; retry after checking the model and tools.")
         from .change_aware import FactStore, check_plan
         from .config import settings
 
@@ -553,7 +670,7 @@ class TaskPlanner:
             fact = raw_fact
             if isinstance(raw_fact, dict):
                 value = raw_fact.get("value")
-                if value is not None and not isinstance(value, (str, list, dict)):
+                if value is not None and not isinstance(value, str):
                     fact = dict(raw_fact)
                     fact["value"] = json.dumps(value, ensure_ascii=False)
                     repairs.append(
@@ -782,6 +899,8 @@ class TaskPlanner:
                 repairs.append(
                     f"dropped redundant mail-browser step '{step_id}'; adaptive_email owns Gmail")
             steps = [step for step in steps if step.id not in mail_browser]
+
+        steps = merge_interface_chains(steps, repairs)
 
         # Cap questions across the whole workflow, keeping the earliest steps'
         # (they block the most). Being asked eight things up front reads as an

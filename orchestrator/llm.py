@@ -20,10 +20,14 @@ import json
 import os
 import random
 import re
+import shutil
+import subprocess
+import tempfile
 import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from .config import settings
@@ -41,6 +45,19 @@ PRICING: Dict[str, tuple] = {
     "claude-haiku-4-5-20251001": (1.00, 5.00),
     "gpt-4o": (2.50, 10.00),
     "gpt-4o-mini": (0.15, 0.60),
+    # Together AI, per million tokens, as its /v1/models endpoint reports
+    # them. Listed because the fallback below is ~4x these rates, and a demo
+    # that overstates its own cost argues against itself.
+    "openai/gpt-oss-120b": (0.15, 0.60),
+    "openai/gpt-oss-20b": (0.05, 0.20),
+    "zai-org/GLM-5.3-Flash": (0.15, 0.50),
+    "deepseek-ai/DeepSeek-V4.1-Flash": (0.30, 1.20),
+    "deepseek-ai/DeepSeek-V4-Flash-0731": (0.14, 0.28),
+    "MiniMaxAI/MiniMax-M3": (0.30, 1.20),
+    "MiniMaxAI/MiniMax-M2.7": (0.30, 1.20),
+    "Qwen/Qwen3-VL-8B-Instruct": (0.18, 0.68),
+    "Qwen/Qwen3-VL-32B-Instruct": (0.50, 1.50),
+    "mistralai/Mistral-Small-24B-Instruct-2501": (0.10, 0.30),
     # NVIDIA NIM free tier is credit-based, not per-token billed.
     "meta/llama-3.1-8b-instruct": (0.0, 0.0),
     "nvidia/nemotron-3-super-120b-a12b": (0.0, 0.0),
@@ -358,6 +375,100 @@ class AnthropicProvider(LLMProvider):
         )
 
 
+class CodexSubscriptionProvider(LLMProvider):
+    """Use the user's signed-in Codex CLI, not an OpenAI API key.
+
+    Each call is an isolated, read-only Codex turn. The orchestrator remains
+    responsible for planning and tool execution; Codex supplies model output.
+    This is deliberately explicit and never selected by API-key detection.
+    """
+
+    name = "codex"
+
+    def __init__(self, model: Optional[str] = None):
+        super().__init__()
+        configured = os.environ.get("CODEX_EXECUTABLE", "").strip()
+        self.executable = None
+        if configured:
+            self.executable = configured if Path(configured).is_file() else shutil.which(configured)
+            if not self.executable:
+                raise LLMError(f"CODEX_EXECUTABLE does not point to a runnable CLI: {configured}")
+        else:
+            self.executable = shutil.which("codex")
+        if not self.executable and os.name == "nt":
+            local_app_data = os.environ.get("LOCALAPPDATA", "")
+            if local_app_data:
+                bin_dir = Path(local_app_data) / "OpenAI" / "Codex" / "bin"
+                candidates = [p for p in bin_dir.glob("*/codex.exe") if p.is_file()]
+                if candidates:
+                    self.executable = str(max(candidates, key=lambda p: p.stat().st_mtime))
+        if not self.executable:
+            raise LLMError("Codex CLI was not found. Install Codex or set CODEX_EXECUTABLE to codex.exe")
+        self.model = model or settings.codex_model
+
+    def _generate_with_images(self, prompt: str, system: Optional[str],
+                              json_mode: bool, metadata: Optional[Dict[str, str]],
+                              images: List[bytes]) -> LLMResponse:
+        return self._run(prompt, system, json_mode, images)
+
+    def _generate(self, prompt: str, system: Optional[str], json_mode: bool,
+                  metadata: Optional[Dict[str, str]]) -> LLMResponse:
+        return self._run(prompt, system, json_mode, [])
+
+    def _run(self, prompt: str, system: Optional[str], json_mode: bool,
+             images: List[bytes]) -> LLMResponse:
+        instructions = (
+            "You are supplying one model response to an external orchestrator. "
+            "Do not use tools, inspect files, or perform the task yourself. "
+            "Your CLI working directory is an isolated inference sandbox, not "
+            "the task workspace: never infer a task file path from it. Use "
+            "only file paths explicitly supplied by the orchestrator or its "
+            "tool results. Return only the requested answer; the orchestrator "
+            "executes actions."
+        )
+        if json_mode:
+            instructions += " Return valid JSON only, without Markdown fences."
+        request = f"{instructions}\n\n"
+        if system:
+            request += f"SYSTEM INSTRUCTIONS:\n{system}\n\n"
+        request += f"USER REQUEST:\n{prompt}"
+        # The project may have a Together or gateway API key in .env.local.
+        # Never let it silently override the CLI's ChatGPT sign-in.
+        child_env = os.environ.copy()
+        for key in ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL"):
+            child_env.pop(key, None)
+        started = time.time()
+        with tempfile.TemporaryDirectory(prefix="orchestrator-codex-") as temp:
+            command = [self.executable, "exec", "--sandbox", "read-only",
+                       "--ephemeral", "--ignore-user-config",
+                       "--skip-git-repo-check", "-C", temp,
+                       "--model", self.model]
+            for index, raw in enumerate(images):
+                path = Path(temp) / f"screen-{index}.png"
+                path.write_bytes(raw)
+                command.extend(["--image", str(path)])
+            command.append("-")
+            try:
+                result = subprocess.run(
+                    command, input=request, text=True, capture_output=True,
+                    encoding="utf-8", errors="replace", env=child_env,
+                    timeout=settings.llm_timeout_s, check=False)
+            except subprocess.TimeoutExpired as exc:
+                raise LLMError(f"Codex did not answer within {settings.llm_timeout_s:g}s") from exc
+            except OSError as exc:
+                raise LLMError(f"Could not start Codex CLI: {exc}") from exc
+        answer = result.stdout.strip()
+        if result.returncode or not answer:
+            diagnostic = result.stderr.strip().splitlines()
+            detail = diagnostic[-1] if diagnostic else "empty answer"
+            raise LLMError(f"Codex CLI failed ({result.returncode}): {detail}")
+        return LLMResponse(
+            text=answer,
+            usage=LLMUsage(calls=1, prompt_tokens=estimate_tokens(request),
+                           completion_tokens=estimate_tokens(answer), cost_usd=0.0),
+            model=self.model, latency_s=time.time() - started)
+
+
 class OpenAIProvider(LLMProvider):
     """GPT via the Chat Completions API. Also fits any OpenAI-compatible
     endpoint (Azure OpenAI, OpenRouter, vLLM, ...) via ``base_url``."""
@@ -660,9 +771,9 @@ class StubProvider(LLMProvider):
             return {"id": step_id, "role": role, "description": description,
                     "depends_on": deps or [], "tool": tool}
 
-        software = any(word in text for word in (
-            "build an app", "build a website", "web app", "mobile app", "software",
-            "api", "frontend", "backend", "code", "application"))
+        from .planner import is_software_task
+
+        software = is_software_task(task_text)
         desktop = any(word in text for word in (
             "microsoft word", "powerpoint", "excel", "desktop", "open the", ".docx", ".pptx"))
         collect_data = any(word in text for word in (
@@ -761,6 +872,7 @@ _factory_lock = threading.Lock()
 _PROVIDER_CLASSES: Dict[str, type] = {
     "gemini": GeminiProvider,
     "anthropic": AnthropicProvider,
+    "codex": CodexSubscriptionProvider,
     "openai": OpenAIProvider,
     "nvidia": NvidiaProvider,
     "ollama": OllamaProvider,
@@ -799,24 +911,44 @@ def get_provider(force_stub: bool = False) -> LLMProvider:
             try:
                 _default_provider = build_provider(name)
             except Exception as exc:  # noqa: BLE001 - degrade instead of crashing
+                if settings.llm_provider and not force_stub:
+                    raise LLMError(
+                        f"Configured provider '{name}' is unavailable: {exc}") from exc
                 print(f"[llm] '{name}' unavailable ({exc}); falling back to stub provider.")
                 _default_provider = StubProvider()
         return _default_provider
 
 
 def provider_for_role(provider: LLMProvider, role: str) -> LLMProvider:
-    """Role-specific NVIDIA model without changing explicit/offline providers."""
-    if not isinstance(provider, NvidiaProvider):
+    """A role-specific model, when one is configured for this provider.
+
+    Roles do genuinely different work: planning wants reasoning, the browser
+    and desktop loops want speed and reliable JSON, and ``screen_locator``
+    wants eyes -- it is handed a screenshot, so on a text-only model that
+    step cannot work at all. Both NVIDIA and OpenAI-compatible endpoints
+    (Together, OpenRouter, vLLM) can therefore be pointed at a different
+    model per role:
+
+        NVIDIA_MODEL_SCREEN_LOCATOR=...
+        OPENAI_MODEL_SCREEN_LOCATOR=MiniMaxAI/MiniMax-M3
+
+    Anything unset falls through to the run's main model, so this stays
+    entirely optional.
+    """
+    kinds = ((NvidiaProvider, "NVIDIA_MODEL_"), (OpenAIProvider, "OPENAI_MODEL_"))
+    prefix = next((p for kind, p in kinds if isinstance(provider, kind)), None)
+    if prefix is None:
         return provider
     env_role = re.sub(r"[^A-Z0-9]+", "_", role.upper())
-    model = os.environ.get(f"NVIDIA_MODEL_{env_role}", "").strip()
+    model = os.environ.get(f"{prefix}{env_role}", "").strip()
     if not model or model == provider.model:
         return provider
     with provider._lock:
         cache = getattr(provider, "_role_providers", {})
         if model not in cache:
-            cache[model] = NvidiaProvider(api_key=provider.api_key, model=model,
-                                         base_url=provider.base_url, max_retries=provider.max_retries)
+            cache[model] = type(provider)(
+                api_key=provider.api_key, model=model,
+                base_url=provider.base_url, max_retries=provider.max_retries)
         provider._role_providers = cache
         return cache[model]
 

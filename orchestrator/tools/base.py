@@ -9,6 +9,57 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 
+def extract_directive(task: str) -> dict:
+    """Read the ``TOOL_DIRECTIVE: {...}`` object out of an agent's output.
+
+    Parsed with a real JSON decoder rather than a regular expression, because
+    the payload routinely *contains* braces: every stylesheet, every script,
+    every JSON sample an agent writes into a file. A pattern like
+    ``\{.*?\}`` stops at the first closing brace that ends a line, which for
+    a directive carrying an HTML document is somewhere in the middle of its
+    CSS. That yields invalid JSON, which was being swallowed into an empty
+    directive -- so the tool reported "no path given" and the run looked like
+    the model had failed to say where to write a file it had described
+    perfectly well. Whether a step worked came down to whether the generated
+    code happened to contain a brace.
+
+    The last directive in the output wins: a model that reasons aloud may
+    mention the marker before finally emitting one.
+    """
+    import json as _json
+
+    if not task:
+        return {}
+    marker = "TOOL_DIRECTIVE:"
+    decoder = _json.JSONDecoder()
+    search_from = len(task)
+    while True:
+        index = task.rfind(marker, 0, search_from)
+        if index == -1:
+            return {}
+        search_from = index
+        brace = task.find("{", index + len(marker))
+        if brace == -1:
+            continue
+        try:
+            parsed, _ = decoder.raw_decode(task, brace)
+        except ValueError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        # Accept both spellings: adapters document fields at the top level,
+        # while computer_use documents {"arguments": {...}}. A model shown
+        # both in one prompt will use either.
+        inner = parsed.get("arguments")
+        if isinstance(inner, dict) and set(parsed) <= {
+                "arguments", "tool", "name", "action"}:
+            merged = dict(inner)
+            if "action" in parsed and "action" not in merged:
+                merged["action"] = parsed["action"]
+            return merged
+        return parsed
+
+
 class ToolError(RuntimeError):
     """A tool tried to run and failed."""
 
@@ -121,6 +172,17 @@ class Tool(ABC):
         valid call looks like.
         """
         return self.description or f"Tool '{self.name}'."
+
+    def argument_schema(self) -> Dict:
+        """The JSON Schema this tool's ``TOOL_DIRECTIVE`` arguments must match.
+
+        Empty by default: most adapters accept prose. Tools that learn their
+        signature at runtime -- MCP tools, whose servers rename fields between
+        releases -- return the real one, so a caller compiling arguments can
+        adapt to the server it actually reached instead of to the server the
+        code was written against.
+        """
+        return {}
 
     def is_irreversible(self, task: str, context: Optional[dict] = None) -> bool:
         """Whether *this particular* call cannot be undone.

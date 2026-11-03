@@ -45,6 +45,13 @@ local = [
 mcp = [
     "mcp>=1.9",
 ]
+desktop = [
+    # computer_use's native desktop backend: screenshots, windows, mouse,
+    # keyboard and clipboard. Imported lazily, so the rest of the system
+    # runs without them -- and on platforms where pywin32 does not exist.
+    "pywin32>=306; sys_platform == 'win32'",
+    "Pillow>=10.0",
+]
 benchmarks = [
     "langgraph>=0.2",
     "langgraph-checkpoint-sqlite>=1.0",

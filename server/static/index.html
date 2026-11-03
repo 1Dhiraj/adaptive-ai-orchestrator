@@ -970,6 +970,34 @@ table button {
   border-radius:13px 5px 13px 13px;
   background:#f5f8fc;
 }
+.chat-workspace {
+  display:flex;
+  flex-direction:column;
+  min-height:min(72vh,720px);
+  margin-top:12px;
+}
+.chat-workspace .hero-intro { margin-bottom:12px; }
+.chat-workspace h1 { font-size:27px; margin-bottom:3px; }
+.chat-thread {
+  flex:1;
+  min-height:280px;
+  max-height:60vh;
+  overflow-y:auto;
+  padding:14px 4px 22px;
+}
+.chat-thread .chat-message { margin:16px 0; }
+.chat-thread .chat-bubble { font-size:14px; white-space:pre-wrap; }
+.chat-thread .chat-message.agent .chat-bubble { border-color:#dbe8e3; }
+.chat-thread .chat-message.user .chat-bubble { background:#eaf4f1; border-color:#d2e6df; }
+.chat-thread .chat-bubble p { margin:9px 0 0; }
+.chat-thread .chat-bubble button { margin:3px 5px 3px 0; }
+.chat-workspace .chat-composer { padding:10px 17px 12px; }
+.chat-workspace .chat-composer textarea { min-height:55px; max-height:180px; padding:7px 0; }
+#view-home.has-chat .example-label,
+#view-home.has-chat .examples,
+#view-home.has-chat .section-heading,
+#view-home.has-chat .recent-list,
+#view-home.has-chat .onboarding { display:none; }
 .chat-bubble h3 {
   margin:0 0 7px;
   font-size:13px;
@@ -1322,19 +1350,18 @@ dialog::backdrop {
 <button data-view="connections">Connect AI <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
 <path d="M5 12h14m-5-5 5 5-5 5"/></svg></button></div>
 <section class="view" id="view-home">
-<div class="hero">
+<div class="hero chat-workspace">
 <div class="hero-intro">
-<div class="eyebrow">A little direction. A lot of possibility.</div>
-<h1>What would you like to get done?</h1>
-<p class="subtitle">Bring the idea. Your AI team will plan the steps and handle the work.</p></div>
-<div class="composer">
-<label for="desc">Describe your task</label>
-<textarea id="desc" placeholder="Build a task management app with login and a Kanban board…"></textarea>
+<div class="eyebrow">YOUR ASSISTANT</div>
+<h1>What can I do for you?</h1>
+<p class="subtitle">Ask naturally. I’ll reply here while I work.</p></div>
+<div id="chat-thread" class="chat-thread" role="log" aria-live="polite" aria-label="Conversation"></div>
+<div class="composer chat-composer">
+<label class="screen-reader" for="desc">Message your assistant</label>
+<textarea id="desc" rows="2" placeholder="Ask me to create a file, use a website, or work on your desktop…"></textarea>
 <div class="composer-footer">
-<p class="hint">
-<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
-<path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6Zm-4 9 3 3 5-6"/></svg> You review the plan before work starts.</p>
-<button class="primary" id="btn-plan">Create a plan <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+<p class="hint">Press Enter to send · Shift+Enter for a new line</p>
+<button class="primary" id="btn-plan">Send <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
 <path d="M5 12h14m-5-5 5 5-5 5"/></svg></button></div></div>
 <details class="options">
 <summary>Task preferences</summary>
@@ -1343,7 +1370,8 @@ dialog::backdrop {
 <input type="checkbox" id="opt-parallel" checked> Work on independent steps together</label>
 <label>
 <input type="checkbox" id="opt-smart" checked> Reuse work when requirements change</label></div></details>
-<p id="plan-hint" class="screen-reader">Describe a task, create a plan, then review it before starting.</p>
+<p id="plan-hint" class="screen-reader">Describe a task and send it to the agent.</p>
+<div id="home-chat-status" class="screen-reader" role="status" aria-live="polite" hidden></div>
 <div class="panel" id="clarify-panel" hidden>
 <h2>A few questions first</h2>
 <div id="clarify"></div>
@@ -1409,6 +1437,13 @@ dialog::backdrop {
 <button data-tab="results">Results &amp; files</button>
 <button data-tab="activity">Activity</button></nav>
 <div id="tab-plan">
+<div class="panel" id="conversation-panel" aria-live="polite">
+<h2>Conversation</h2>
+<div id="conversation-messages"></div>
+<div class="row" style="margin-top:12px">
+<input id="chat-next-task" class="grow" aria-label="Ask for a new task" placeholder="Ask me to do a new task…">
+<button class="primary" id="chat-next-send">New task</button></div>
+</div>
 <div id="attention-link" class="notice" hidden>
 <span>This task needs a connection before it can start.</span>
 <button data-view="connections">Review setup →</button></div>
@@ -2019,8 +2054,8 @@ function finishConfirmation(accepted) {
   dialog._resolveConfirmation = null;
 }
 
-async function fetchWorkspaceFile(path) {
-  const response = await fetch(`/api/runs/${runId}/files/${encodeURIComponent(path)}`, {
+async function fetchWorkspaceFile(path, fileRunId = runId) {
+  const response = await fetch(`/api/runs/${fileRunId}/files/${encodeURIComponent(path)}`, {
     headers: apiKey ? { "Authorization": `Bearer ${apiKey}` } : {},
   });
   if (!response.ok) {
@@ -2041,13 +2076,13 @@ function clearArtifactPreview() {
   $("#artifact-content").hidden = false;
 }
 
-async function viewWorkspaceFile(path) {
+async function viewWorkspaceFile(path, fileRunId = runId) {
   try {
-    const response = await fetchWorkspaceFile(path);
+    const response = await fetchWorkspaceFile(path, fileRunId);
     const viewer = $("#artifact-viewer");
     clearArtifactPreview();
     $("#artifact-title").textContent = path.split("/").pop();
-    $("#artifact-location").textContent = `Stored at workspace/${runId}/${path}`;
+    $("#artifact-location").textContent = `Stored at workspace/${fileRunId}/${path}`;
     if (/\.pdf$/i.test(path)) {
       artifactPreviewUrl = URL.createObjectURL(await response.blob());
       $("#artifact-content").hidden = true;
@@ -2057,6 +2092,7 @@ async function viewWorkspaceFile(path) {
       $("#artifact-content").textContent = await response.text();
     }
     $("#artifact-download").dataset.path = path;
+    $("#artifact-download").dataset.runId = fileRunId;
     viewer.dataset.path = path;
     viewer.hidden = false;
     viewer.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -2065,9 +2101,9 @@ async function viewWorkspaceFile(path) {
   }
 }
 
-async function downloadWorkspaceFile(path) {
+async function downloadWorkspaceFile(path, fileRunId = runId) {
   try {
-    const response = await fetchWorkspaceFile(path);
+    const response = await fetchWorkspaceFile(path, fileRunId);
     const blob = await response.blob();
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -2240,6 +2276,121 @@ function renderRequirements(state) {
 let setupSignature = null;
 let taskSetupSignature = null;
 let chatReceipts = [];
+let chatTurns = [];
+let pendingChatTurn = null;
+
+function chatOutcome(state) {
+  const steps = state.steps || [];
+  const finished = steps.filter(s => ["done", "skipped", "not_applicable"].includes(s.result?.status));
+  const failures = steps.filter(s => s.result?.status === "failed" || s.result?.error);
+  const waiting = Object.keys(state.pending_inputs || {}).length + Object.keys(state.pending_actions || {}).length;
+  const files = (state.workspace_files || []).filter(f => !f.path.endsWith(".log.jsonl"));
+  const requestedAction = /\b(open|launch|draw|type|click|save|create|write|build|make|edit|run|scrape)\b/i.test(state.description || "")
+    && /\b(paint|notepad|vscode|browser|website|web app)\b|https?:\/\/|\.[a-z0-9]{2,5}\b/i.test(state.description || "");
+  const usedActionTool = steps.some(s => s.result?.tool_used || s.requires_tool);
+  const asksPictureLocation = /\b(pic|picture|image|drawing)\b/i.test(state.description || "")
+    && /\b(location|path|where)\b/i.test(state.description || "");
+  let reply;
+  if (state.busy) reply = `I’m working on it. ${finished.length} of ${steps.length} steps finished.`;
+  else if (requestedAction && !usedActionTool) reply = "I did not complete this task. The plan used no app or file tool, so the ‘done’ steps were only text.";
+  else if (asksPictureLocation && !files.some(f => /\.(png|jpg|jpeg|bmp|gif|webp)$/i.test(f.path))) reply = "I cannot give a picture location because this task did not save a picture.";
+  else if (waiting) reply = "I need your answer or approval to continue. Open task details below.";
+  else if (state.requirements?.can_run === false) reply = "I need a connection or tool before I can start. Open task details below.";
+  else if (failures.length) reply = `I could not finish: ${failures.map(s => friendly(s.id)).join(", ")}. ${failures[0].result.error || "See the task details."}`;
+  else if (steps.length && finished.length === steps.length) reply = `Done. I finished ${finished.length} step${finished.length === 1 ? "" : "s"}.`;
+  else reply = "I’ve planned your task and am starting it.";
+  return { reply, files };
+}
+
+function renderChatThread() {
+  const host = $("#chat-thread");
+  $("#view-home").classList.toggle("has-chat", chatTurns.length > 0);
+  if (!chatTurns.length) {
+    host.innerHTML = '<div class="chat-message agent"><span class="chat-avatar">AI</span><div class="chat-bubble">Hi. Tell me what you want done, and I’ll work on it here.</div></div>';
+    return;
+  }
+  host.innerHTML = chatTurns.map(turn => {
+    const outcome = turn.state ? chatOutcome(turn.state) : { reply: turn.reply || "I’m thinking…", files: [] };
+    const files = outcome.files.map(f => `<button type="button" data-chat-run="${esc(turn.runId)}" data-chat-file="${esc(f.path)}">Open ${esc(f.path)}</button>`).join("");
+    const detail = turn.runId ? `<button type="button" data-chat-detail="${esc(turn.runId)}">Task details</button>` : "";
+    return `<div class="chat-message user"><span class="chat-avatar">YOU</span><div class="chat-bubble">${esc(turn.prompt)}</div></div>
+      <div class="chat-message agent"><span class="chat-avatar">AI</span><div class="chat-bubble">${esc(outcome.reply)}${files ? `<p>Saved in workspace/${esc(turn.runId)}/</p><p>${files}</p>` : ""}${detail ? `<p>${detail}</p>` : ""}</div></div>`;
+  }).join("");
+  host.querySelectorAll("[data-chat-file]").forEach(button => button.addEventListener("click", async () => {
+    try {
+      await selectRun(button.dataset.chatRun);
+      setTaskTab("results");
+      await viewWorkspaceFile(button.dataset.chatFile, button.dataset.chatRun);
+    } catch (err) { notifyError(err.message); }
+  }));
+  host.querySelectorAll("[data-chat-detail]").forEach(button => button.addEventListener("click", () =>
+    selectRun(button.dataset.chatDetail).catch(err => notifyError(err.message))));
+  host.scrollTop = host.scrollHeight;
+}
+
+function updateChatTurn(state) {
+  const turn = chatTurns.find(item => item.runId === state.run_id);
+  if (!turn) return;
+  turn.state = state;
+  renderChatThread();
+}
+
+function saveChatHistory() {
+  sessionStorage.setItem("orchestrator_chat_history", JSON.stringify(chatTurns.slice(-20).map(t => ({
+    prompt: t.prompt, reply: t.reply || "", runId: t.runId || null,
+  }))));
+}
+
+async function answerChatFollowup(prompt) {
+  const latest = [...chatTurns].reverse().find(turn => turn.state);
+  if (!latest) return false;
+  const state = latest.state;
+  const { reply, files } = chatOutcome(state);
+  let answer = "";
+  if (/^(where|which folder|what(?:'s| is) (?:the )?(?:file path|location)|(give|tell|show) me.*\b(?:pic|picture|image|file)\b.*\b(?:location|path))/i.test(prompt)) {
+    const wantedPicture = /\b(pic|picture|image|drawing)\b/i.test(prompt);
+    const matchingFiles = wantedPicture
+      ? files.filter(f => /\.(png|jpg|jpeg|bmp|gif|webp)$/i.test(f.path)) : files;
+    answer = matchingFiles.length
+      ? `I saved it in ${matchingFiles.map(f => `workspace/${state.run_id}/${f.path}`).join(", ")}.`
+      : wantedPicture ? "I did not save a picture, so there is no picture location to give you."
+        : "I don't see a saved file for that task yet. Open task details to check its results.";
+  } else if (/^(what(?:'s| is) (?:the )?(?:status|progress)|are you (?:done|finished|working)|did (?:it|you) (?:finish|work)|what did you do)/i.test(prompt) && prompt.length < 120) {
+    answer = reply + (files.length ? ` Saved files: ${files.map(f => `workspace/${state.run_id}/${f.path}`).join(", ")}.` : "");
+  } else if (/^(what did you write|what(?:'s| is) in (?:it|the file)|show me (?:the )?(?:contents|file)|read (?:it|the file) back)/i.test(prompt)) {
+    const file = files.find(f => /\.(txt|md|html|css|js|json|csv|py)$/i.test(f.path));
+    if (file) {
+      try {
+        const response = await fetchWorkspaceFile(file.path, state.run_id);
+        answer = `Here is ${file.path}:\n${(await response.text()).slice(0, 2500)}`;
+      } catch (err) { answer = `I couldn't read that file: ${err.message}`; }
+    } else answer = "I don't see a readable text file from that task yet.";
+  }
+  if (!answer) return false;
+  chatTurns.push({ prompt, reply: answer });
+  saveChatHistory();
+  renderChatThread();
+  return true;
+}
+
+async function restoreChatRuns() {
+  let history = [];
+  try { history = JSON.parse(sessionStorage.getItem("orchestrator_chat_history") || "[]"); } catch (_) {}
+  if (!Array.isArray(history)) history = [];
+  if (!history.length && savedRuns.length) history = [{ runId: savedRuns[0].run_id }];
+  const restored = await Promise.all(history.slice(-20).map(async item => {
+    if (!item.runId) return item.prompt && item.reply ? { prompt: item.prompt, reply: item.reply } : null;
+    try {
+      const state = await api(`/api/runs/${encodeURIComponent(item.runId)}`);
+      return { prompt: item.prompt || state.description || "Task", runId: state.run_id, state };
+    } catch (_) { return null; } // deleted runs are dropped from this chat
+  }));
+  chatTurns = restored.filter(Boolean);
+  saveChatHistory();
+  renderChatThread();
+  const latest = [...chatTurns].reverse().find(turn => turn.state);
+  if (latest?.state?.busy) await selectRun(latest.runId, false);
+}
 
 function addChatReceipt(message) {
   chatReceipts.push(message);
@@ -2629,6 +2780,8 @@ async function submitInputs(stepId, inputs) {
 
 function render(state) {
   snapshot = state;
+  updateChatTurn(state);
+  renderConversation(state);
   renderTaskExperience(state);
   renderGraph(state);
   renderGuide(state);
@@ -2649,6 +2802,17 @@ function render(state) {
   $("#btn-stop").disabled = !has || !state.busy || state.cancellation_requested;
   $("#btn-stop").textContent = state.cancellation_requested ? "Stopping…" : "Stop task";
   syncTaskControls(state);
+}
+
+function renderConversation(state) {
+  const { reply, files } = chatOutcome(state);
+  const fileLinks = files.map(f => `<button class="text-button" type="button" data-chat-file="${esc(f.path)}">workspace/${esc(state.run_id)}/${esc(f.path)}</button>`).join(" ");
+  const result = files.length ? `<p>Saved file${files.length === 1 ? "" : "s"} (click to open): ${fileLinks}</p>` : "";
+  $("#conversation-messages").innerHTML = `
+    <div class="chat-message user"><span class="chat-avatar">YOU</span><div class="chat-bubble">${esc(state.description || "")}</div></div>
+    <div class="chat-message agent"><span class="chat-avatar">AI</span><div class="chat-bubble">${esc(reply)}${result}</div></div>`;
+  $("#conversation-messages").querySelectorAll("[data-chat-file]").forEach(button =>
+    button.addEventListener("click", () => viewWorkspaceFile(button.dataset.chatFile)));
 }
 
 // -- actions ---------------------------------------------------------------
@@ -2828,7 +2992,7 @@ function openNewStepForm() {
   });
 }
 
-function startNewWorkflow() {
+function startNewWorkflow(resetChat = true) {
   // Deselect the current run so nothing carries over implicitly.
   if (socket) { socket.onclose = null; socket.close(); socket = null; }
   runId = null;
@@ -2837,11 +3001,13 @@ function startNewWorkflow() {
   setupSignature = null;
   taskSetupSignature = null;
   chatReceipts = [];
+  if (resetChat) { chatTurns = []; saveChatHistory(); renderChatThread(); }
   $("#chat-receipts").innerHTML = "";
   $("#task-setup-chat").innerHTML = "";
   $("#ws-state").textContent = "Ready";
   $("#ws-state").className = "pill";
   $("#desc").value = "";
+  $("#home-chat-status").hidden = true;
   $("#clarify-panel").hidden = true;
   $("#ask-panel").hidden = true;
   $("#new-step").hidden = true;
@@ -2910,7 +3076,7 @@ function connect(id) {
   };
 }
 
-async function selectRun(id) {
+async function selectRun(id, openTask = true) {
   const state = await api(`/api/runs/${id}`);
   if (socket) { socket.onclose = null; socket.close(); socket = null; }
   runId = id;
@@ -2924,11 +3090,9 @@ async function selectRun(id) {
   $("#new-webhook-url").innerHTML = "";
   $("#run-picker").value = id;
   render(state);
-  showView("task");
-  setTaskTab("plan");
+  if (openTask) { showView("task"); setTaskTab("plan"); }
   connect(id);
-  await refreshTemplates();
-  await refreshAudit();
+  if (openTask) { await refreshTemplates(); await refreshAudit(); }
 }
 
 async function refreshRuns() {
@@ -2950,11 +3114,15 @@ let pendingClarifications = null;
 async function doPlan(description, clarifications) {
   $("#btn-plan").disabled = true;
   $("#btn-plan").textContent = "Planning…";
+  $("#home-chat-status").hidden = false;
+  $("#home-chat-status").textContent = "AI: I’m making a plan for your task…";
   try {
+    const previousRunId = [...chatTurns].reverse().find(turn => turn.runId)?.runId || null;
     const state = await api("/api/runs", {
       method: "POST",
       body: JSON.stringify({
         description,
+        previous_run_id: previousRunId,
         clarifications: clarifications || {},
         parallel: $("#opt-parallel").checked,
         smart_invalidation: $("#opt-smart").checked,
@@ -2966,13 +3134,34 @@ async function doPlan(description, clarifications) {
     // re-planning whatever was typed before.
     $("#desc").value = "";
     pendingClarifications = null;
+    if (pendingChatTurn) {
+      pendingChatTurn.runId = state.run_id;
+      pendingChatTurn.state = state;
+      pendingChatTurn = null;
+      saveChatHistory();
+      renderChatThread();
+    }
     await refreshRuns();
-    await selectRun(state.run_id);
+    await selectRun(state.run_id, false);
+    if (state.requirements?.can_run !== false && !Object.keys(state.pending_inputs || {}).length
+        && !Object.keys(state.pending_actions || {}).length) {
+      const started = await act(`/api/runs/${state.run_id}/run`, {
+        method: "POST", body: JSON.stringify({ fresh: false }),
+      });
+      if (!started) $("#home-chat-status").textContent = "AI: The plan is ready, but I could not start it. Open the task for details.";
+    }
   } catch (err) {
     log("planning failed: " + err.message, "var(--failed)");
+    $("#home-chat-status").textContent = "AI: I could not plan this task: " + err.message;
+    if (pendingChatTurn) {
+      pendingChatTurn.reply = "I could not plan this task: " + err.message;
+      pendingChatTurn = null;
+      saveChatHistory();
+      renderChatThread();
+    }
   } finally {
     $("#btn-plan").disabled = false;
-    $("#btn-plan").textContent = "Create a plan";
+    $("#btn-plan").textContent = "Send";
   }
 }
 
@@ -3037,6 +3226,21 @@ function renderClarify(description, questions, useRemembered = true) {
 $("#btn-plan").addEventListener("click", async () => {
   const description = $("#desc").value.trim();
   if (description.length < 3) { log("describe the project first", "var(--failed)"); return; }
+  if (pendingChatTurn) return;
+  if (await answerChatFollowup(description)) { $("#desc").value = ""; return; }
+  pendingChatTurn = { prompt: description, reply: "I’m checking what I need to do this…" };
+  chatTurns.push(pendingChatTurn);
+  renderChatThread();
+  $("#desc").value = "";
+  $("#home-chat-status").hidden = false;
+  $("#home-chat-status").textContent = "YOU: " + description + "\nAI: I’m checking what I need to do this…";
+
+  // A referential follow-up has context from the previous run. Let the task
+  // planner see that context directly instead of asking about an isolated "it".
+  if (chatTurns.some(turn => turn.runId) && /\b(it|that|this|same|previous|first tip|second tip|third tip)\b/i.test(description)) {
+    await doPlan(description, {});
+    return;
+  }
 
   // Ask before planning: answers here change the whole shape of the plan,
   // so it is much cheaper to ask now than to re-plan afterwards.
@@ -3051,15 +3255,29 @@ $("#btn-plan").addEventListener("click", async () => {
     log("could not get clarifying questions: " + err.message, "var(--paused)");
   } finally {
     $("#btn-plan").disabled = false;
-    $("#btn-plan").textContent = "Create a plan";
+    $("#btn-plan").textContent = "Send";
   }
 
   if (clarify.questions && clarify.questions.length) {
+    $("#home-chat-status").textContent = "AI: I need a little more information before I start. Answer below.";
+    if (pendingChatTurn) pendingChatTurn.reply = "I need a little more information before I start. Please answer below.";
+    renderChatThread();
     log(`asking ${clarify.questions.length} question(s) before planning`, "var(--accent)");
     renderClarify(description, clarify.questions);
   } else {
     await doPlan(description, {});   // already clear enough
   }
+});
+
+$("#chat-next-send").addEventListener("click", () => {
+  const request = $("#chat-next-task").value.trim();
+  if (!request) return;
+  startNewWorkflow();
+  $("#desc").value = request;
+  $("#btn-plan").click();
+});
+$("#chat-next-task").addEventListener("keydown", event => {
+  if (event.key === "Enter") { event.preventDefault(); $("#chat-next-send").click(); }
 });
 
 $("#btn-run").addEventListener("click", async () => {
@@ -3226,10 +3444,23 @@ function setTaskTab(tab) {
 }
 function renderHealth(health) {
   const mode = String(health.config.llm_mode || "Unknown");
-  const demo = /stub|offline|deterministic/i.test(mode);
-  $("#llm-mode").textContent = demo ? "Demo mode ↗" : friendly(mode) + " ↗";
-  $("#provider-description").textContent = demo ? "Demo mode is active. Connect an AI provider below for real model output." : "Your current model: " + mode;
-  $("#demo-notice").hidden = !demo;
+  const model = String(health.config.model || "");
+  const endpoint = String(health.config.endpoint || "");
+  const ready = health.config.provider_ready !== false;
+  const demo = ready && /stub|offline|deterministic/i.test(health.config.active_provider || mode);
+  // Show the model, not the provider: "openai" is true of GPT, DeepSeek and a
+  // local gateway alike, so naming the provider answered nothing.
+  $("#llm-mode").textContent = !ready ? "Model unavailable ↗" : demo ? "Demo mode ↗" : (model || friendly(mode)) + " ↗";
+  $("#provider-description").textContent = !ready
+    ? health.config.provider_error || "The configured AI model is unavailable."
+    : demo
+    ? "Demo mode is active. Connect an AI provider below for real model output."
+    : "Your current model: " + (model || "unknown") + " · " + friendly(mode)
+      + (endpoint ? " · " + endpoint : "");
+  $("#demo-notice").hidden = ready && !demo;
+  $("#demo-notice span").textContent = ready
+    ? "You’re in demo mode. Tasks use sample AI output until you connect a model."
+    : "The AI model is unavailable. Tasks cannot start until the connection is fixed.";
   $("#workspace-mode").textContent = health.api_auth_required ? "Team workspace" : "Local workspace";
 }
 function renderRunLists() {
@@ -3280,7 +3511,7 @@ $("#artifact-close").addEventListener("click", () => {
   $("#artifact-viewer").hidden = true;
 });
 $("#artifact-download").addEventListener("click", e => {
-  if (e.currentTarget.dataset.path) downloadWorkspaceFile(e.currentTarget.dataset.path);
+  if (e.currentTarget.dataset.path) downloadWorkspaceFile(e.currentTarget.dataset.path, e.currentTarget.dataset.runId);
 });
 $("#toast-close").addEventListener("click", () => { $("#toast").hidden = true; });
 $("#menu-toggle").addEventListener("click", () => { const opened = $("#sidebar").classList.toggle("open"); $("#menu-toggle").setAttribute("aria-expanded", String(opened)); syncMobileNavigation(); if (opened) $("#btn-new").focus(); });
@@ -3326,7 +3557,12 @@ const examplePrompts = {
   write:"Write a project proposal for an AI task orchestrator, covering the problem, features, architecture, and milestones."
 };
 document.querySelectorAll("[data-example]").forEach(el => el.addEventListener("click", () => { $("#desc").value = examplePrompts[el.dataset.example]; $("#desc").focus(); }));
-$("#desc").addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && !$("#btn-plan").disabled) $("#btn-plan").click(); });
+$("#desc").addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !$("#btn-plan").disabled) {
+    e.preventDefault();
+    $("#btn-plan").click();
+  }
+});
 window.addEventListener("unhandledrejection", e => { notifyError(e.reason?.message || "Something went wrong. Please try again."); });
 
 (async function init() {
@@ -3338,7 +3574,8 @@ window.addEventListener("unhandledrejection", e => { notifyError(e.reason?.messa
     await refreshTemplates();
     await refreshAudit();
     await refreshHealth();
-    startNewWorkflow();
+    startNewWorkflow(false);
+    await restoreChatRuns();
     log("dashboard ready");
   } catch (err) {
     log("startup failed: " + err.message, "var(--failed)");

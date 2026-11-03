@@ -56,7 +56,7 @@ _load_env_files()
 
 MODEL_PREFERENCE_KEYS = {
     "LLM_PROVIDER", "GEMINI_MODEL", "ANTHROPIC_MODEL", "OPENAI_MODEL",
-    "NVIDIA_MODEL", "OLLAMA_MODEL",
+    "NVIDIA_MODEL", "OLLAMA_MODEL", "CODEX_MODEL",
 }
 
 
@@ -84,7 +84,7 @@ def save_model_preference(provider: str, model: str) -> Path:
     model_keys = {
         "gemini": "GEMINI_MODEL", "anthropic": "ANTHROPIC_MODEL",
         "openai": "OPENAI_MODEL", "nvidia": "NVIDIA_MODEL",
-        "ollama": "OLLAMA_MODEL",
+        "ollama": "OLLAMA_MODEL", "codex": "CODEX_MODEL",
     }
     if provider not in model_keys or not model:
         raise ValueError("Choose a supported provider and model")
@@ -128,6 +128,9 @@ class Settings:
     openai_base_url: str = field(
         default_factory=lambda: os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"))
 
+    #: Uses the locally signed-in Codex CLI / ChatGPT plan, not OPENAI_API_KEY.
+    codex_model: str = field(default_factory=lambda: os.environ.get("CODEX_MODEL", "gpt-6.1-sol"))
+
     #: NVIDIA NIM: OpenAI-compatible, 100+ hosted open models, free tier.
     nvidia_api_key: Optional[str] = field(default_factory=lambda: os.environ.get("NVIDIA_API_KEY"))
     #: Current NVIDIA-hosted general instruction model.
@@ -145,7 +148,7 @@ class Settings:
         default_factory=lambda: os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"))
     ollama_model: str = field(default_factory=lambda: os.environ.get("OLLAMA_MODEL", "llama3.1"))
 
-    #: Explicit override: "gemini" | "anthropic" | "openai" | "ollama" | "stub".
+    #: Explicit override: "gemini" | "anthropic" | "codex" | "openai" | "ollama" | "stub".
     #: Unset -> auto-detect from whichever API key is present (see
     #: resolve_provider()).
     llm_provider: Optional[str] = field(
@@ -212,11 +215,22 @@ class Settings:
         model = {
             "gemini": self.gemini_model, "anthropic": self.anthropic_model,
             "openai": self.openai_model, "ollama": self.ollama_model,
-            "nvidia": self.nvidia_model,
+            "nvidia": self.nvidia_model, "codex": self.codex_model,
         }.get(provider, "stub")
+        # The host the calls go to, with no credential in it. Provider alone
+        # cannot answer "am I on GPT or DeepSeek right now": both are reached
+        # through the openai-compatible path, so both report "openai" and the
+        # dashboard showed the same thing either way.
+        endpoint = ""
+        if provider == "openai":
+            endpoint = (self.openai_base_url or "").replace("https://", "").replace(
+                "http://", "").rstrip("/").removesuffix("/v1")
+        elif provider == "ollama":
+            endpoint = (self.ollama_base_url or "").replace("http://", "")
         return {
             "llm_mode": provider if provider != "stub" else "stub (deterministic, offline)",
             "model": model,
+            "endpoint": endpoint,
             "max_workers": self.max_workers,
             "db_path": self.db_path,
             "live_tools": [

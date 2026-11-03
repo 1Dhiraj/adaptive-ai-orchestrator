@@ -520,3 +520,63 @@ class TestAgentHandoffs:
         assert resumed.agent_messages == [
             {"from": "research", "to": "write", "message": "Use finding 42"}]
         resumed.close()
+
+
+def test_an_approved_action_reports_running_while_it_works(tmp_path):
+    """A long action must not keep saying it is waiting for approval.
+
+    A browser step can run for minutes. Until this was fixed the step kept the
+    status it had while queued, so a dashboard showed "waiting for final
+    approval" for the entire time it was doing the thing that had just been
+    approved -- and everyone who saw that concluded their click had not
+    registered and approved again.
+    """
+    import threading
+
+    from orchestrator.models import Step, StepStatus
+    from orchestrator.state import StateManager
+    from orchestrator.tools.base import Tool
+    from orchestrator.tools import ToolManager
+    from orchestrator.workflow import Workflow
+
+    started = threading.Event()
+    release = threading.Event()
+    seen = []
+
+    class SlowIrreversible(Tool):
+        name = "slow_action"
+        capability = "slow_action"
+        side_effect = True
+        irreversible = True
+
+        def is_live(self):
+            return True
+
+        def _run(self, task, context=None):
+            started.set()
+            release.wait(timeout=10)
+            return "done at last"
+
+    workflow = Workflow(
+        steps=[Step(id="act", name="act", description="do the slow thing",
+                    agent_role="generic", requires_tool="slow_action")],
+        tool_manager=ToolManager([SlowIrreversible()]),
+        state=StateManager(str(tmp_path / "s.db")),
+        action_approval="all",
+    )
+
+    workflow.run_full()
+    assert workflow.awaiting_action() == ["act"]
+
+    workflow.approve_action("act")
+    thread = threading.Thread(target=workflow.resume, daemon=True)
+    thread.start()
+
+    assert started.wait(timeout=10), "the approved action never started"
+    seen.append(workflow.results["act"].status)
+    release.set()
+    thread.join(timeout=15)
+
+    # While it was working it said so, and it finished cleanly afterwards.
+    assert seen == [StepStatus.RUNNING]
+    assert workflow.results["act"].status is StepStatus.DONE

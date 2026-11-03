@@ -24,6 +24,11 @@ websockets>=12.0
 # Optional: imported lazily, everything else works without it.
 mcp>=1.9
 
+# Native desktop control (computer_use's desktop backend, Windows only).
+# Optional: imported lazily, so everything else works without them.
+pywin32>=306; sys_platform == "win32"
+Pillow>=10.0
+
 # Benchmark baselines (python -m orchestrator.cli bench)
 langgraph>=0.2
 langgraph-checkpoint-sqlite>=1.0

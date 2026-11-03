@@ -9,6 +9,7 @@ someone relaxed it.
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -112,6 +113,13 @@ class TestBackendSelection:
         tool = ComputerUseTool(run_id="pick2",
                                tools=ToolManager([FakeBackend("hermes_desktop")]))
         assert tool.backend() == "hermes_desktop"
+
+    def test_own_native_desktop_is_preferred_when_both_are_available(self):
+        tool = ComputerUseTool(
+            run_id="pick-native",
+            tools=ToolManager([FakeBackend("hermes_desktop"),
+                               FakeBackend("desktop_native")]))
+        assert tool.backend(["notepad"]) == "desktop_native"
 
     def test_native_app_target_uses_desktop_even_when_browser_is_connected(self):
         browser = FakeBackend("web_browser_navigate")
@@ -447,7 +455,7 @@ class TestLimitsAndLogging:
         assert json.loads(wait.calls[0].removeprefix("TOOL_DIRECTIVE: ")) == {
             "arguments": {"time": 2.0}}
         assert json.loads(screenshot.calls[0].removeprefix("TOOL_DIRECTIVE: ")) == {
-            "arguments": {"type": "png"}}
+            "arguments": {"type": "png", "scale": "css"}}
         assert json.loads(back.calls[0].removeprefix("TOOL_DIRECTIVE: ")) == {
             "arguments": {}}
 
@@ -483,7 +491,7 @@ class TestLimitsAndLogging:
         spec = json.loads(
             desktop.calls[0].removeprefix("TOOL_DIRECTIVE: "))["arguments"]
         assert spec == {"action": "click_target", "target": "Save button",
-                        "window": "notepad"}
+                        "button": "left", "window": "notepad"}
 
     def test_missing_model_directive_uses_bounded_step_description_plan(
             self, allow_everything, tmp_path):
@@ -589,22 +597,108 @@ class TestLimitsAndLogging:
 
         assert result == "focused 'Untitled - Notepad'"
 
-    def test_desktop_type_passes_exact_text_to_unicode_input(
+    def test_desktop_focus_matches_executable_when_title_differs(
+            self, monkeypatch, tmp_path):
+        import orchestrator.tools.desktop as desktop_module
+
+        front = ["Chrome", "chrome.exe"]
+        monkeypatch.setattr(desktop_module, "foreground_window", lambda: front[0])
+        monkeypatch.setattr(desktop_module, "foreground_process", lambda: front[1])
+        monkeypatch.setattr(desktop_module, "list_windows", lambda: [
+            {"handle": 7, "title": "Untitled - Paint"}])
+        monkeypatch.setattr(desktop_module, "window_process", lambda handle: "mspaint.exe")
+        class FakeGui:
+            def IsIconic(self, handle): return False
+            def SetForegroundWindow(self, handle): front[:] = ["Untitled - Paint", "mspaint.exe"]
+        class FakeApi:
+            def keybd_event(self, *args): pass
+        class FakeCon:
+            SW_RESTORE = 9
+        monkeypatch.setattr(desktop_module, "_win32",
+                            lambda: (FakeApi(), FakeCon(), FakeGui(), None))
+        monkeypatch.setattr(desktop_module.time, "sleep", lambda seconds: None)
+
+        tool = DesktopTool(run_id="focus-paint", root=tmp_path)
+        assert tool._focus("mspaint", ["mspaint"]) == "focused 'Untitled - Paint'"
+        assert "mspaint.exe" in tool._ensure_target("mspaint", ["mspaint"])
+
+    def test_desktop_type_passes_exact_text_through_the_clipboard(
+            self, monkeypatch, tmp_path):
+        # Pasting, not synthesised keystrokes: see DesktopTool._type for why
+        # injected typing corrupts text rather than merely dropping it.
+        import orchestrator.tools.desktop as desktop_module
+
+        monkeypatch.setattr(desktop_module, "_win32", lambda: (None, None, None, None))
+        monkeypatch.setattr(desktop_module.time, "sleep", lambda _seconds: None)
+        clipboard = ["whatever the person had copied"]
+        monkeypatch.setattr(desktop_module, "_clipboard_get", lambda: clipboard[-1])
+        monkeypatch.setattr(desktop_module, "_clipboard_set",
+                            lambda value: clipboard.append(value))
+        tool = DesktopTool(run_id="unicode-type", root=tmp_path)
+        monkeypatch.setattr(tool, "_ensure_target",
+                            lambda window, allow: "Untitled - Notepad [notepad.exe]")
+        keys = []
+        monkeypatch.setattr(tool, "_key",
+                            lambda combo, allow, window="": keys.append(combo))
+        monkeypatch.setattr(tool, "_send_unicode",
+                            lambda _text: pytest.fail("should have pasted"))
+
+        result = tool._type("MiXeD exact ✓", ["notepad"], "notepad")
+
+        assert "MiXeD exact ✓" in clipboard
+        assert keys == ["ctrl+v"]
+        assert "13 character(s)" in result
+        # Borrowed, not taken: the person gets their clipboard back.
+        assert clipboard[-1] == "whatever the person had copied"
+
+    def test_desktop_type_can_be_forced_to_use_keystrokes(
             self, monkeypatch, tmp_path):
         import orchestrator.tools.desktop as desktop_module
 
         monkeypatch.setattr(desktop_module, "_win32", lambda: (None, None, None, None))
         monkeypatch.setattr(desktop_module.time, "sleep", lambda _seconds: None)
-        tool = DesktopTool(run_id="unicode-type", root=tmp_path)
+        tool = DesktopTool(run_id="forced-keystrokes", root=tmp_path)
         monkeypatch.setattr(tool, "_ensure_target",
-                            lambda window, allow: "Untitled - Notepad [notepad.exe]")
+                            lambda window, allow: "Untitled - Notepad")
         captured = []
         monkeypatch.setattr(tool, "_send_unicode", captured.append)
 
-        result = tool._type("MiXeD exact ✓", ["notepad"], "notepad")
+        result = tool._type("exact", ["notepad"], "notepad", method="keystrokes")
 
-        assert captured == ["MiXeD exact ✓"]
-        assert "13 character(s)" in result
+        assert captured == ["exact"]
+        # The caller is told this path is not verified, because it is not.
+        assert "unverified" in result
+
+    def test_desktop_type_falls_back_when_the_clipboard_cannot_be_reached(
+            self, monkeypatch, tmp_path):
+        import orchestrator.tools.desktop as desktop_module
+
+        def no_clipboard(*_args):
+            raise OSError("clipboard is held by another process")
+
+        monkeypatch.setattr(desktop_module, "_win32", lambda: (None, None, None, None))
+        monkeypatch.setattr(desktop_module.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(desktop_module, "_clipboard_get", no_clipboard)
+        monkeypatch.setattr(desktop_module, "_clipboard_set", no_clipboard)
+        tool = DesktopTool(run_id="clipboard-busy", root=tmp_path)
+        monkeypatch.setattr(tool, "_ensure_target", lambda window, allow: "Notepad")
+        captured = []
+        monkeypatch.setattr(tool, "_send_unicode", captured.append)
+
+        result = tool._type("still gets typed", ["notepad"], "notepad")
+
+        assert captured == ["still gets typed"]
+        assert "unverified" in result
+
+    def test_desktop_type_rejects_an_unknown_method(self, monkeypatch, tmp_path):
+        import orchestrator.tools.desktop as desktop_module
+
+        monkeypatch.setattr(desktop_module, "_win32", lambda: (None, None, None, None))
+        tool = DesktopTool(run_id="bad-method", root=tmp_path)
+        monkeypatch.setattr(tool, "_ensure_target", lambda window, allow: "Notepad")
+
+        with pytest.raises(ToolError, match="unknown typing method"):
+            tool._type("text", ["notepad"], "notepad", method="telepathy")
 
 
 class TestRegistration:
@@ -622,3 +716,298 @@ class TestRegistration:
 
         manager = default_tool_manager()
         assert manager.get("computer_use").tools is manager
+
+
+class TestAnySiteWildcard:
+    """`*` opens the web, and deliberately not the desktop.
+
+    A fixed list cannot answer an open question -- "find me the cheapest
+    flight" names no site, so a list can only refuse it. But the two
+    permissions are not comparable: opening an arbitrary URL is what a browser
+    does all day inside a sandboxed tab, while driving an arbitrary desktop
+    application puts synthetic clicks and keystrokes into whatever is in
+    front, which may be a mail client or an open bank tab.
+    """
+
+    @pytest.fixture
+    def anything(self, monkeypatch):
+        monkeypatch.setenv("ORCHESTRATOR_ALLOW_DESKTOP", "1")
+        monkeypatch.setenv("ORCHESTRATOR_COMPUTER_USE_ALLOW", "*, notepad")
+
+    @pytest.mark.parametrize("site", [
+        "amazon.in", "facebook.com", "hdfcbank.com", "bbc.co.uk",
+        "some-site-nobody-listed.example", "localhost", "127.0.0.1",
+    ])
+    def test_any_website_is_allowed(self, anything, site):
+        from orchestrator.tools.computer_use import _target_allowed, allowed_targets
+
+        assert _target_allowed(site, allowed_targets())
+
+    @pytest.mark.parametrize("app", ["calc", "cmd", "powershell", "chrome", "outlook"])
+    def test_unnamed_desktop_apps_are_still_refused(self, anything, app):
+        from orchestrator.tools.computer_use import _target_allowed, allowed_targets
+
+        assert not _target_allowed(app, allowed_targets())
+
+    def test_a_named_desktop_app_still_works(self, anything):
+        from orchestrator.tools.computer_use import _target_allowed, allowed_targets
+
+        assert _target_allowed("notepad", allowed_targets())
+
+    def test_without_the_wildcard_nothing_extra_is_allowed(self, monkeypatch):
+        from orchestrator.tools.computer_use import _target_allowed, allowed_targets
+
+        monkeypatch.setenv("ORCHESTRATOR_COMPUTER_USE_ALLOW", "example.com")
+        assert not _target_allowed("amazon.in", allowed_targets())
+
+    def test_credentials_are_still_refused_with_the_wildcard_on(self, anything, tmp_path):
+        # The wildcard widens *where*, never *what*. A password must still not
+        # be typed into a page, whichever page it is.
+        backend = FakeBackend()
+        tool = ComputerUseTool(run_id="wild-secret",
+                               tools=ToolManager([backend]), root=tmp_path)
+        with pytest.raises(ToolError, match="password"):
+            tool.execute("log in with password: hunter2\n" + directive(
+                goal="log in", targets=["anywhere.example"], actions=["open the page"]))
+        assert backend.calls == []
+
+    def test_the_preview_says_the_run_may_go_anywhere(self, anything, tmp_path):
+        # Whoever approves this needs to see that it is not bounded by a list.
+        tool = ComputerUseTool(run_id="wild-preview",
+                               tools=ToolManager([FakeBackend()]), root=tmp_path)
+        preview = tool.preview(directive(
+            goal="shop around", targets=["amazon.in"], actions=["open the page"]))
+        assert "any website" in preview
+
+
+class TestOpeningItsOwnFiles:
+    """Building something and looking at it is one task, not two.
+
+    The second half used to be unreachable: a file has no hostname, so every
+    allow-list check refused it and "open the page you just wrote" failed with
+    a demand to name a site. The rule here is ownership rather than
+    permission -- a file this run produced, in its own workspace or artifacts
+    directory, reaches nothing the run did not already have.
+    """
+
+    def roots(self, tmp_path):
+        work = tmp_path / "workspace"
+        art = tmp_path / "artifacts"
+        work.mkdir()
+        art.mkdir()
+        return [work, art]
+
+    def test_a_file_it_produced_resolves_to_a_file_url(self, tmp_path):
+        from orchestrator.tools.computer_use import local_file_url
+
+        roots = self.roots(tmp_path)
+        (roots[1] / "todo.html").write_text("<h1>todo</h1>", encoding="utf-8")
+
+        url = local_file_url("todo.html", roots)
+        # Served, not file:// -- browsers refuse the file: protocol under
+        # automation, so a page the run built is published on loopback.
+        assert url and url.startswith("http://127.0.0.1:")
+        assert url.endswith("/todo.html")
+
+    def test_a_file_url_is_accepted_too(self, tmp_path):
+        from orchestrator.tools.computer_use import local_file_url
+
+        roots = self.roots(tmp_path)
+        target = roots[1] / "report.html"
+        target.write_text("x", encoding="utf-8")
+        served = local_file_url(target.as_uri(), roots)
+        assert served and served.endswith("/report.html")
+
+    def test_anything_outside_those_directories_is_refused(self, tmp_path):
+        # Otherwise this becomes a way to read the rest of the disk.
+        from orchestrator.tools.computer_use import local_file_url
+
+        roots = self.roots(tmp_path)
+        outside = tmp_path / "secrets.html"
+        outside.write_text("private", encoding="utf-8")
+        assert local_file_url(str(outside), roots) is None
+
+    def test_traversal_out_of_the_workspace_is_refused(self, tmp_path):
+        from orchestrator.tools.computer_use import local_file_url
+
+        roots = self.roots(tmp_path)
+        outside = tmp_path / "escape.html"
+        outside.write_text("private", encoding="utf-8")
+        assert local_file_url("../escape.html", roots) is None
+
+    def test_a_missing_file_is_not_invented(self, tmp_path):
+        from orchestrator.tools.computer_use import local_file_url
+
+        assert local_file_url("nope.html", self.roots(tmp_path)) is None
+
+    def test_a_website_is_left_to_the_allow_list(self, tmp_path):
+        from orchestrator.tools.computer_use import local_file_url
+
+        assert local_file_url("https://example.com/x.html",
+                              self.roots(tmp_path)) is None
+
+    def test_the_browser_opens_the_file_it_just_wrote(self, allow_everything, tmp_path):
+        # End to end: no site named, and it still opens the artifact.
+        navigate = FakeBackend("web_browser_navigate")
+        tool = ComputerUseTool(run_id="own-file",
+                               tools=ToolManager([navigate]), root=tmp_path)
+        tool.open_roots = self.roots(tmp_path)
+        (tool.open_roots[1] / "todo.html").write_text("<h1>todo</h1>", encoding="utf-8")
+
+        tool.execute(directive(goal="open todo.html and confirm it renders",
+                               actions=["open the page"]))
+
+        opened = json.loads(navigate.calls[0].removeprefix("TOOL_DIRECTIVE: "))
+        assert opened["arguments"]["url"].startswith("http://127.0.0.1:")
+        assert opened["arguments"]["url"].endswith("/todo.html")
+
+    def test_it_opens_what_this_run_just_built_when_the_plan_names_a_fact(
+            self, allow_everything, tmp_path):
+        # Plans refer to their own outputs by fact name -- "the path given by
+        # the todo_app_path fact" -- so the filename never reaches the tool.
+        import time as _time
+
+        navigate = FakeBackend("web_browser_navigate")
+        tool = ComputerUseTool(run_id="built-it",
+                               tools=ToolManager([navigate]), root=tmp_path)
+        tool.open_roots = self.roots(tmp_path)
+        _time.sleep(0.01)
+        (tool.open_roots[1] / "todo.html").write_text("<h1>todo</h1>", encoding="utf-8")
+
+        tool.execute(directive(
+            goal="open the saved app and confirm the task appears",
+            actions=["open the page", "read the page"]))
+
+        opened = json.loads(navigate.calls[0].removeprefix("TOOL_DIRECTIVE: "))
+        assert opened["arguments"]["url"].endswith("/todo.html")
+
+    def test_it_does_not_reach_for_files_that_were_already_there(
+            self, allow_everything, tmp_path):
+        # Anything predating this run is not this run's output, and picking it
+        # up would turn a missing target into a silently wrong one.
+        import time as _time
+
+        navigate = FakeBackend("web_browser_navigate")
+        roots = self.roots(tmp_path)
+        (roots[1] / "old.html").write_text("<h1>old</h1>", encoding="utf-8")
+        _time.sleep(0.05)          # clear the filesystem's timestamp granularity
+
+        tool = ComputerUseTool(run_id="not-mine",
+                               tools=ToolManager([navigate]), root=tmp_path)
+        tool.open_roots = roots
+
+        with pytest.raises(ToolError, match="targets"):
+            tool.execute(directive(goal="open the saved app and confirm it",
+                                   actions=["open the page"]))
+        assert navigate.calls == []
+
+
+class TestLaunchingAnEditorOnItsWork:
+    """An editor is only useful pointed at something.
+
+    So `launch` takes one path -- and only one this run owns. The containment
+    check is the whole point: "open the editor on the project you just wrote"
+    must work, while "open it on anything else on this disk" must not.
+    """
+
+    def tool(self, tmp_path, monkeypatch):
+        import orchestrator.tools.desktop as desktop_module
+
+        monkeypatch.setenv("ORCHESTRATOR_ALLOW_DESKTOP", "1")
+        monkeypatch.setenv("ORCHESTRATOR_COMPUTER_USE_ALLOW", "code, notepad")
+        monkeypatch.setattr(desktop_module, "_win32", lambda: (None, None, None, None))
+        monkeypatch.setattr(desktop_module, "foreground_window", lambda: "Code")
+        monkeypatch.setattr(desktop_module.time, "sleep", lambda _s: None)
+        monkeypatch.setattr(desktop_module.shutil, "which",
+                            lambda name: f"C:\\bin\\{name if name.endswith('.exe') else name + '.exe'}")
+        started = []
+        monkeypatch.setattr(desktop_module.subprocess, "Popen",
+                            lambda cmd, **kw: started.append((cmd, kw)))
+        return DesktopTool(run_id="editor", root=tmp_path), started
+
+    def test_it_opens_a_folder_this_run_owns(self, tmp_path, monkeypatch):
+        tool, started = self.tool(tmp_path, monkeypatch)
+        tool.workspace.mkdir(parents=True, exist_ok=True)
+        (tool.workspace / "todo.html").write_text("<h1>x</h1>", encoding="utf-8")
+
+        result = tool._launch("code", ["code"], ".")
+
+        command, kwargs = started[0]
+        assert command[0].endswith("code.exe")
+        assert str(tool.workspace.resolve()) in command[-1]
+        assert kwargs.get("shell") is False      # never through a shell
+        assert "launched 'code'" in result
+
+    def test_paint_allow_list_name_launches_mspaint(self, tmp_path, monkeypatch):
+        tool, started = self.tool(tmp_path, monkeypatch)
+
+        result = tool._launch("paint", ["paint"], "")
+
+        assert started[0][0][0].endswith("mspaint.exe")
+        assert "launched 'paint'" in result
+
+    def test_a_folder_outside_the_run_is_refused(self, tmp_path, monkeypatch):
+        tool, started = self.tool(tmp_path, monkeypatch)
+        outside = tmp_path / "somewhere-else"
+        outside.mkdir()
+
+        with pytest.raises(ToolError, match="not inside this run"):
+            tool._launch("code", ["code"], str(outside))
+        assert started == []
+
+    def test_traversal_is_refused(self, tmp_path, monkeypatch):
+        tool, started = self.tool(tmp_path, monkeypatch)
+        tool.workspace.mkdir(parents=True, exist_ok=True)
+
+        with pytest.raises(ToolError, match="not inside this run"):
+            tool._launch("code", ["code"], "../../Windows")
+        assert started == []
+
+    def test_an_app_outside_the_allow_list_is_still_refused(self, tmp_path, monkeypatch):
+        tool, started = self.tool(tmp_path, monkeypatch)
+        with pytest.raises(ToolError, match="allow-list"):
+            tool._launch("powershell", ["code", "notepad"], "")
+        assert started == []
+
+    def test_a_missing_executable_says_so(self, tmp_path, monkeypatch):
+        import orchestrator.tools.desktop as desktop_module
+
+        tool, _ = self.tool(tmp_path, monkeypatch)
+        monkeypatch.setattr(desktop_module.shutil, "which", lambda name: None)
+        with pytest.raises(ToolError, match="not on PATH"):
+            tool._launch("code", ["code"], "")
+
+
+class TestDisplayScaling:
+    """Measurement, capture and pointer must share one coordinate space.
+
+    Windows lies about the screen to programs that have not declared DPI
+    awareness: at 125% scaling GetSystemMetrics reports 1536x864 while a
+    screenshot captures the real 1920x1080. The vision model is shown the
+    capture, so it answers in physical pixels; the click is then issued in
+    logical ones and lands 1.25x away. Nothing errors -- the pointer just
+    arrives somewhere else, which is the hardest kind of bug to see, because
+    the transcript says the click succeeded.
+    """
+
+    def test_declaring_awareness_is_idempotent_and_never_raises(self):
+        import orchestrator.tools.desktop as desktop_module
+
+        desktop_module._DPI_READY = False
+        desktop_module._ensure_dpi_aware()
+        desktop_module._ensure_dpi_aware()      # already set: must not raise
+        assert desktop_module._DPI_READY
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows display scaling only")
+    def test_the_screen_measures_the_same_as_it_captures(self):
+        import win32api
+        from PIL import ImageGrab
+
+        from orchestrator.tools.desktop import _win32
+
+        _win32()
+        measured = (win32api.GetSystemMetrics(0), win32api.GetSystemMetrics(1))
+        captured = ImageGrab.grab().size
+        assert measured == captured, (
+            f"measured {measured} but captured {captured}: a click aimed at "
+            "what the model saw would land somewhere else")

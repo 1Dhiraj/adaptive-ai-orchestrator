@@ -70,6 +70,15 @@ class TestExtractJson:
 
 
 class TestPlanning:
+    def test_paint_action_cannot_finish_as_tool_free_prose(self):
+        plan = json.dumps({"tasks": [{
+            "id": "execute", "role": "workflow_operator",
+            "description": "Complete the digital work", "depends_on": [], "tool": None,
+        }]})
+        with pytest.raises(PlanningError, match="no action tool"):
+            TaskPlanner(llm=ScriptedProvider(plan)).plan(
+                "Open Paint, draw a house, then save the picture")
+
     def test_tool_setup_questions_are_not_user_inputs(self):
         requests = [
             InputRequest(
@@ -167,6 +176,11 @@ class TestPlanning:
 
         assert "workspace" in workflow.tools
         assert "terminal" in workflow.tools
+
+    def test_plain_html_page_request_gets_coding_tools(self):
+        from orchestrator.planner import is_software_task
+
+        assert is_software_task("Create a single HTML page named greeting.html")
 
     def test_roles_are_normalised(self):
         result = TaskPlanner(llm=ScriptedProvider(VALID_PLAN)).plan("Build something")
@@ -271,16 +285,17 @@ class TestPlanning:
         """JSON-mode models may preserve numeric clarification answers.
 
         The typed fact store intentionally holds strings, so the planner's
-        model-output boundary must normalise JSON scalars before validation.
+        model-output boundary must normalise JSON values before validation.
         """
         plan = json.dumps({
             "tasks": [{
                 "id": "report", "role": "writer", "description": "Write it",
-                "depends_on": [], "assumes": ["report_length", "include_sources"],
+                "depends_on": [], "assumes": ["report_length", "include_sources", "scene_elements"],
             }],
             "facts": [
                 {"key": "report_length", "value": 800, "owner": "report", "aliases": []},
                 {"key": "include_sources", "value": True, "owner": "report", "aliases": []},
+                {"key": "scene_elements", "value": ["roof", "sun"], "owner": "report", "aliases": []},
             ],
         })
 
@@ -288,7 +303,8 @@ class TestPlanning:
 
         assert result.graph.facts["report_length"].value == "800"
         assert result.graph.facts["include_sources"].value == "true"
-        assert sum("normalised fact" in repair for repair in result.repairs) == 2
+        assert result.graph.facts["scene_elements"].value == '["roof", "sun"]'
+        assert sum("normalised fact" in repair for repair in result.repairs) == 3
 
     def test_unusable_response_retries_then_fails_closed(self):
         provider = ScriptedProvider("I'd be happy to help!")
@@ -406,3 +422,44 @@ class TestPlanFromFile:
         path = tmp_path / "plan.json"
         path.write_text(json.dumps(json.loads(VALID_PLAN)["tasks"]), encoding="utf-8")
         assert len(plan_from_json(str(path))) == 3
+
+
+class TestSoftwareTaskDetection:
+    """Whether the coding tools get attached at all.
+
+    This is not a cosmetic classification. A miss means `workspace` and
+    `terminal` are never registered, so every step that needed to write a file
+    fails with "workspace: not registered" -- after the plan has already been
+    paid for. Plenty of ordinary names for software say nothing about being
+    software, which is exactly where it used to fail.
+    """
+
+    @pytest.mark.parametrize("description", [
+        "Build a task manager with auth, a Kanban board and a Postgres database",
+        "Build a URL shortener service",
+        "Build an expense tracker",
+        "Create a chatbot",
+        "Build a Discord bot",
+        "Create a REST API for users",
+        "Build a web app with auth",
+        "Write a script to rename files",
+    ])
+    def test_software_is_recognised(self, description):
+        from orchestrator.planner import is_software_task
+
+        assert is_software_task(description)
+
+    @pytest.mark.parametrize("description", [
+        "Research three frameworks and write a report",
+        "Plan a birthday party",
+        "Summarise this document",
+        "Write a poem about autumn",
+        "Draft an email to the team",
+        "Open example.com and read the heading",
+    ])
+    def test_ordinary_work_is_not_mistaken_for_software(self, description):
+        # Over-matching is its own cost: it attaches a shell and a workspace
+        # to a step that only ever needed to write prose.
+        from orchestrator.planner import is_software_task
+
+        assert not is_software_task(description)

@@ -242,7 +242,24 @@ class McpConnection:
             raise ToolError(f"MCP tool '{name}' returned an error: {text or '(no message)'}")
         return text or f"[mcp:{self.spec.name}] '{name}' returned no text content"
 
-    def _call_session(self, coro_factory) -> Any:
+    #: Transport failures worth one reconnect. A browser server is a
+    #: subprocess: it can be killed, crash, or lose its pipe between calls,
+    #: and every one of those surfaces here as a dead session rather than as
+    #: a problem with the request. Reconnecting is what a person would do.
+    _RECOVERABLE = (
+        "closed", "broken", "not running", "no active session", "eof",
+        "connection", "pipe", "reset", "terminated", "cancelled",
+    )
+
+    def _call_session(self, coro_factory, _retrying: bool = False) -> Any:
+        """Run one call, reconnecting once if the session died underneath us.
+
+        The session is a long-lived subprocess. Anything that kills it -- a
+        crash, a stray process cleanup, a machine waking from sleep -- used to
+        surface as a failed *step*, often with an empty message, because the
+        exception carried no text. A dropped pipe is not a reason to fail the
+        work; it is a reason to open the pipe again.
+        """
         self.connect()  # no-op when healthy; restarts a dead session
         loop, session = self._loop, self._session
         if loop is None or session is None:  # pragma: no cover - connect() raises first
@@ -268,7 +285,17 @@ class McpConnection:
         except ToolError:
             raise
         except Exception as exc:  # noqa: BLE001 - protocol/transport errors are all routable
-            raise ToolError(f"MCP call to '{self.spec.name}' failed: {exc}") from exc
+            detail = str(exc).strip() or f"{type(exc).__name__} with no message"
+            if not _retrying and any(
+                    marker in f"{type(exc).__name__} {detail}".lower()
+                    for marker in self._RECOVERABLE):
+                try:
+                    self.close(timeout=2.0)
+                except Exception:  # noqa: BLE001 - it is already broken
+                    pass
+                return self._call_session(coro_factory, _retrying=True)
+            raise ToolError(
+                f"MCP call to '{self.spec.name}' failed: {detail}") from exc
 
     # -- background thread ---------------------------------------------------
 
@@ -387,14 +414,20 @@ class McpTool(Tool):
         return (f"{self.description}\n"
                 f"Arguments schema: {{{', '.join(fields)}}}   (? = optional)")
 
+    def argument_schema(self) -> Dict[str, Any]:
+        """The schema the server itself declared for this tool."""
+        return getattr(self._mcp_tool, "inputSchema", None) or {}
+
     def _run(self, task: str, context: Optional[dict] = None) -> str:
         arguments = self._build_arguments(task)
         return self._connection.call_tool(self._mcp_tool.name, arguments)
 
     def _build_arguments(self, task: str) -> Dict[str, Any]:
         directive = _directive(task)
-        if "arguments" in directive and isinstance(directive["arguments"], dict):
-            return directive["arguments"]
+        # _directive already strips an {"arguments": {...}} envelope, so a
+        # directive that is present at all is this tool's argument object.
+        if directive:
+            return directive
 
         schema = getattr(self._mcp_tool, "inputSchema", None) or {}
         required = schema.get("required") or []

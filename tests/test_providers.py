@@ -313,21 +313,18 @@ class TestProviderSelection:
         monkeypatch.setenv("LLM_PROVIDER", "openai")
         assert Settings(force_stub_llm=True).resolve_provider() == "stub"
 
-    def test_get_provider_degrades_to_stub_on_construction_failure(self, monkeypatch, capsys):
+    def test_explicit_provider_failure_does_not_silently_use_stub(self, monkeypatch):
         from orchestrator import llm as llm_module
         from orchestrator.config import Settings
 
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setenv("LLM_PROVIDER", "anthropic")
-        # get_provider() reads the module-level `settings`; swap it for one
-        # that resolves to a provider whose key is genuinely absent, so the
-        # try/except degrade-to-stub path actually runs.
+        # An explicitly selected provider must fail visibly if unavailable.
         monkeypatch.setattr(llm_module, "settings", Settings())
         llm_module.set_provider(None)
         try:
-            provider = llm_module.get_provider()
-            assert provider.name == "stub"
-            assert "unavailable" in capsys.readouterr().out
+            with pytest.raises(LLMError, match="Configured provider 'anthropic' is unavailable"):
+                llm_module.get_provider()
         finally:
             llm_module.set_provider(None)
 
