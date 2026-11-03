@@ -58,6 +58,16 @@ def test_localhost_goal_retains_server_port(monkeypatch):
     assert _target_allowed(plan.targets[0], allowed_targets())
 
 
+def test_explicit_article_url_precedes_wikipedia_home(monkeypatch):
+    from orchestrator.tools.computer_use import _parse_plan
+
+    monkeypatch.setenv("ORCHESTRATOR_COMPUTER_USE_ALLOW", "wikipedia.org")
+    plan = _parse_plan(directive(
+        goal="Open https://en.wikipedia.org/wiki/Moon and read the article",
+        targets=["wikipedia.org", "en.wikipedia.org"], autonomous=True))
+    assert plan.targets[0] == "https://en.wikipedia.org/wiki/Moon"
+
+
 def test_dead_localhost_server_uses_run_html(monkeypatch, tmp_path):
     monkeypatch.setenv("ORCHESTRATOR_ALLOW_DESKTOP", "1")
     monkeypatch.setenv("ORCHESTRATOR_COMPUTER_USE_ALLOW", "127.0.0.1")
@@ -99,6 +109,22 @@ def test_calculator_requires_observed_twelve(monkeypatch, tmp_path):
     with pytest.raises(ToolError, match="did not show 12"):
         tool.execute(directive(goal="Open the calculator and check 7 + 5 = 12",
                                targets=["calculator.html"], autonomous=True))
+
+
+def test_moon_facts_require_article_and_source_extract(monkeypatch, tmp_path):
+    from orchestrator.tools.builtin import RestApiTool
+
+    monkeypatch.setenv("ORCHESTRATOR_ALLOW_DESKTOP", "1")
+    monkeypatch.setenv("ORCHESTRATOR_COMPUTER_USE_ALLOW", "wikipedia.org")
+    source = ("only natural satellite of Earth; every 29.5 days; diameter is 3,474 km; "
+              "main driver of Earth's tides; Apollo 11 on July 20, 1969")
+    monkeypatch.setattr(RestApiTool, "execute", lambda self, *args, **kwargs: source)
+    navigate = FakeBackend(response="### Page\n- Page URL: https://en.wikipedia.org/wiki/Moon")
+    tool = ComputerUseTool(run_id="moon-check", tools=ToolManager([navigate]), root=tmp_path)
+    result = tool.execute(directive(
+        goal="Open https://en.wikipedia.org/wiki/Moon and give five facts",
+        targets=["wikipedia.org"], autonomous=True))
+    assert "5. Apollo 11" in result
 
 
 @pytest.fixture

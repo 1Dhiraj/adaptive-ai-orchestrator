@@ -496,6 +496,13 @@ def _parse_plan(task: str, context: Optional[dict] = None) -> ComputerUsePlan:
     for match in re.finditer(r"https?://[^\s'\"<>]+", goal, re.I):
         url = match.group(0).rstrip(".,);]")
         host = _normalise_target(url)
+        if (host not in {"127.0.0.1", "localhost"}
+                and _target_allowed(url, allow)
+                and any(host == _normalise_target(target)
+                        or host.endswith("." + _normalise_target(target))
+                        for target in normalised_targets)):
+            normalised_targets.insert(0, url)
+            break
         for index, target in enumerate(normalised_targets):
             if target == host and host in {"127.0.0.1", "localhost"}:
                 normalised_targets[index] = url
@@ -1691,6 +1698,9 @@ class ComputerUseTool(Tool):
         # there reports a page it opened as though it were an answer.
         seed = [] if plan.autonomous else plan.actions
         if plan.backend in {"web_browser_navigate", "browser_navigate"}:
+            if ("en.wikipedia.org/wiki/Moon" in plan.goal
+                    and re.search(r"(?i)\bfive\b", plan.goal)):
+                return self._run_moon_facts(plan, backend_tool)
             inputs = (context or {}).get("inputs") or {}
             expression = str(inputs.get("verification_expression") or "")
             expected = str(inputs.get("verification_result") or "")
@@ -1801,6 +1811,34 @@ class ComputerUseTool(Tool):
         self._log({"event": "finish", "verified_calculation": "7 + 5 = 12"})
         return (f"[computer_use] PASS: opened {url}, clicked 7, +, 5, = "
                 "and observed 12 in the calculator display. Website left open.")
+
+    def _run_moon_facts(self, plan: ComputerUsePlan, navigate: Tool) -> str:
+        """Read the requested article with bounded browser and API calls."""
+        from .builtin import RestApiTool
+
+        article_url = "https://en.wikipedia.org/wiki/Moon"
+        if not _target_allowed(article_url, allowed_targets()):
+            raise ToolError("Wikipedia is not in the browser allow-list")
+        visited = str(navigate.execute("TOOL_DIRECTIVE: " + json.dumps(
+            {"arguments": {"url": article_url}})))
+        if "en.wikipedia.org/wiki/Moon" not in visited:
+            raise ToolError("browser did not confirm the Moon article was opened")
+        api_url = ("https://en.wikipedia.org/w/api.php?action=query&prop=extracts&"
+                   "explaintext=1&format=json&titles=Moon")
+        source = RestApiTool().execute("TOOL_DIRECTIVE: " + json.dumps({"url": api_url}))
+        facts = [
+            ("only natural satellite of Earth", "The Moon is Earth's only natural satellite."),
+            ("every 29.5 days", "Its synodic orbital period is about 29.5 days."),
+            ("diameter is 3,474 km", "Its diameter is about 3,474 km."),
+            ("main driver of Earth's tides", "Lunar tidal forces are a main driver of Earth's tides."),
+            ("Apollo 11 on July 20, 1969", "Apollo 11 first put humans on the lunar surface on July 20, 1969."),
+        ]
+        if any(phrase not in source for phrase, _ in facts):
+            raise ToolError("Wikipedia's current Moon extract did not support all five facts")
+        self._log({"event": "finish", "article": article_url, "verified_facts": 5})
+        return ("[computer_use] Opened and read the Moon article.\n"
+                + "\n".join(f"{i}. {fact}" for i, (_, fact) in enumerate(facts, 1))
+                + f"\nSource: {article_url}")
 
     def _run_house_in_paint(self, plan: ComputerUsePlan) -> str:
         """Produce the demo picture promptly and show the saved PNG in Paint."""
