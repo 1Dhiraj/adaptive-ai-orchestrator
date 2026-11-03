@@ -13,6 +13,7 @@ The planner, DAG, change-awareness and dashboard stay the same.
 
     python scripts/use_engine.py              # show which is active
     python scripts/use_engine.py codex
+    python scripts/use_engine.py gemini   # backup if Codex usage is exhausted
     python scripts/use_engine.py together
 
 The point of the script, rather than editing .env.local by hand, is that
@@ -28,7 +29,8 @@ from pathlib import Path
 
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env.local"
 
-MANAGED = ("LLM_PROVIDER", "CODEX_MODEL", "OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL",
+MANAGED = ("LLM_PROVIDER", "CODEX_MODEL", "GEMINI_MODEL", "CODEX_AGENT_DISABLED",
+           "OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL",
            "OPENAI_MODEL_COMPUTER_OPERATOR", "OPENAI_MODEL_SCREEN_LOCATOR")
 
 TOGETHER = {
@@ -78,8 +80,11 @@ def describe() -> None:
     lines = read_env()
     base = current_value(lines, "OPENAI_BASE_URL")
     provider = current_value(lines, "LLM_PROVIDER")
-    model = current_value(lines, "CODEX_MODEL") if provider == "codex" else current_value(lines, "OPENAI_MODEL")
+    model = (current_value(lines, "CODEX_MODEL") if provider == "codex" else
+             current_value(lines, "GEMINI_MODEL") if provider == "gemini" else
+             current_value(lines, "OPENAI_MODEL"))
     engine = ("codex" if provider == "codex" else
+              "gemini" if provider == "gemini" else
               "together" if "together" in base
               else "unknown")
     print(f"engine   : {engine}")
@@ -105,8 +110,14 @@ def main() -> int:
         apply({"_name": "together", **TOGETHER, "OPENAI_API_KEY": key})
     elif choice == "codex":
         apply({"_name": "codex", "LLM_PROVIDER": "codex", "CODEX_MODEL": "gpt-6.1-sol"})
+    elif choice == "gemini":
+        lines = read_env()
+        if not current_value(lines, "GEMINI_API_KEY"):
+            raise SystemExit("GEMINI_API_KEY is not set in .env.local")
+        apply({"_name": "gemini", "LLM_PROVIDER": "gemini",
+               "GEMINI_MODEL": "gemini-2.5-flash", "CODEX_AGENT_DISABLED": "1"})
     else:
-        raise SystemExit(f"unknown engine {choice!r}; use together or codex")
+        raise SystemExit(f"unknown engine {choice!r}; use codex, gemini or together")
 
     print(f"switched to {choice}\n")
     describe()

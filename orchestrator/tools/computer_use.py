@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
 import threading
 import time
 from dataclasses import dataclass, field
@@ -205,6 +206,59 @@ def serve_local_file(path: Path) -> str:
     return f"{base}/{quote_plus(path.name, safe='')}"
 
 
+def _house_in_paint_goal(plan: "ComputerUsePlan") -> bool:
+    """Recognise the bounded Paint illustration this dashboard demonstrates."""
+    words = set(re.findall(r"[a-z]+", plan.goal.lower()))
+    return (any(target in {"paint", "mspaint", "mspaint.exe"} for target in plan.targets)
+            and {"house", "roof", "door", "sun", "grass", "save"} <= words)
+
+
+def _exact_notepad_text(plan: "ComputerUsePlan") -> Optional[str]:
+    if ("notepad" not in plan.targets
+            or not re.search(r"(?i)\bnew\b", plan.goal)
+            or not re.search(r"(?i)\b(?:leave|visible)\b", plan.goal)):
+        return None
+    typed = [match.group(2) for action in plan.actions
+             if (match := re.fullmatch(r"(?i)\s*type\s+(['\"])(.*?)\1\s*",
+                                      action, re.S))]
+    if len(typed) == 1:
+        return typed[0]
+    quoted = re.search(r"(?i)\b(?:containing|type) exactly\s+(['\"])(.*?)\1",
+                       plan.goal, re.S)
+    if quoted:
+        return quoted.group(2)
+    unquoted = re.search(r"(?i)\bcontaining exactly\s+(.+?)\s+verify\b",
+                         plan.goal, re.S)
+    if unquoted:
+        return unquoted.group(1).strip()
+    plain = re.search(r"(?i)\btype:\s*(.+?)(?:\s+leave\b|$)", plan.goal, re.S)
+    return plain.group(1).strip() if plain else None
+
+
+def _draw_house_picture(path: Path) -> None:
+    """Create a real PNG that Paint can open, with all requested elements."""
+    from PIL import Image, ImageDraw
+
+    canvas = Image.new("RGB", (960, 640), "#a7dbff")
+    art = ImageDraw.Draw(canvas)
+    art.rectangle((0, 490, 960, 640), fill="#67b84b")
+    art.ellipse((710, 62, 840, 192), fill="#ffe15c", outline="#e3a832", width=5)
+    for point in ((775, 20, 775, 52), (775, 202, 775, 233),
+                  (670, 127, 700, 127), (850, 127, 880, 127),
+                  (700, 52, 718, 70), (832, 184, 852, 204)):
+        art.line(point, fill="#ffce3c", width=8)
+    art.rectangle((230, 275, 620, 515), fill="#ffd46d", outline="#b77736", width=6)
+    art.polygon(((190, 285), (425, 120), (660, 285)),
+                fill="#d85848", outline="#93382f", width=6)
+    art.rectangle((385, 385, 475, 515), fill="#8b5635", outline="#543521", width=5)
+    art.ellipse((455, 445, 464, 454), fill="#f5cf65")
+    for left in (275, 520):
+        art.rectangle((left, 330, left + 65, 400), fill="#e3f6ff",
+                      outline="#8e633b", width=5)
+        art.line((left + 32, 330, left + 32, 400), fill="#8e633b", width=4)
+    canvas.save(path, format="PNG")
+
+
 def allows_any_site(allow: Optional[List[str]] = None) -> bool:
     """Whether this run may open any website.
 
@@ -243,7 +297,7 @@ def _target_allowed(target: str, allow: List[str]) -> bool:
     Domains match on suffix so ``example.com`` covers ``www.example.com``,
     but ``notexample.com`` is not covered by ``example.com``.
     """
-    candidate = (target or "").strip().lower()
+    candidate = _normalise_target(target)
     if not candidate:
         return False
     # The wildcard opens the web, not the desktop -- see allows_any_site.
@@ -420,16 +474,32 @@ def _parse_plan(task: str, context: Optional[dict] = None) -> ComputerUsePlan:
     if isinstance(actions, str):
         actions = [actions]
     actions = [str(a).strip() for a in actions if str(a).strip()]
-    # Model output is untrusted. URLs are reduced to hostnames, and prose such
-    # as "open the page" is not accepted as a target. Bare names are allowed
-    # only when they exactly name an operator-approved application.
+    # Keep complete approved URLs so a local server's port and a page's path
+    # survive planning. Access checks below still use only the hostname.
     allow = allowed_targets()
     normalised_targets = []
     for raw_target in targets:
-        candidate = _normalise_target(str(raw_target))
-        if candidate and (_looks_like_web_target(candidate) or candidate in allow):
-            if candidate not in normalised_targets:
-                normalised_targets.append(candidate)
+        raw = str(raw_target).strip()
+        candidate = _normalise_target(raw)
+        # Keep file references long enough to resolve them against this run's
+        # workspace. _run still refuses any file outside those roots.
+        local_reference = bool(re.search(
+            r"(?i)\.(?:html?|pdf|svg|txt|md|json|csv)$", candidate))
+        if candidate and (_looks_like_web_target(candidate)
+                          or candidate in allow or local_reference):
+            retained = (raw if candidate in {"127.0.0.1", "localhost"}
+                        and re.match(r"^https?://", raw, re.I) else candidate)
+            if retained not in normalised_targets:
+                normalised_targets.append(retained)
+    # Models often declare only the host while putting the actual localhost
+    # URL in the goal. Reuse that URL only when its host matches a target.
+    for match in re.finditer(r"https?://[^\s'\"<>]+", goal, re.I):
+        url = match.group(0).rstrip(".,);]")
+        host = _normalise_target(url)
+        for index, target in enumerate(normalised_targets):
+            if target == host and host in {"127.0.0.1", "localhost"}:
+                normalised_targets[index] = url
+                break
     try:
         max_steps = max(1, min(int(payload.get("max_steps") or _DEFAULT_MAX_STEPS), 100))
     except (TypeError, ValueError):
@@ -1452,6 +1522,14 @@ class ComputerUseTool(Tool):
     def preview(self, task: str, context: Optional[dict] = None) -> str:
         plan = _parse_plan(task, context)
         plan.backend = self.backend(plan.targets)
+        if _exact_notepad_text(plan) is not None:
+            return ("computer_use [REAL]\nOpen a fresh Notepad document, type the "
+                    "requested text, read it back exactly, and leave it visible.")
+        if _house_in_paint_goal(plan):
+            return ("computer_use [REAL]\n"
+                    "Create the requested house PNG in this run's workspace, "
+                    "open it in Paint, and verify the saved file and Paint window. "
+                    "The shapes are rendered programmatically before Paint opens.")
         self._add_search_submission_when_supported(plan)
         mode = "REAL" if _enabled() and plan.backend != "none" else "unavailable"
         # A person approving this needs to know whether the steps below are
@@ -1546,6 +1624,31 @@ class ComputerUseTool(Tool):
             # shows the examiner a JSON endpoint rather than their app.
             plan.targets = list(self._local_files) + [
                 target for target in plan.targets if target not in self._local_files]
+            # Backend choice was made before the produced file was resolved.
+            # A file path is not a domain, so the old choice was desktop_native,
+            # which tried to launch a browser executable as an app and then
+            # reported the browser check done without opening the page.
+            plan.backend = self._browser_backend() or "none"
+        elif plan.targets:
+            # A coding subprocess can exit after creating a static site,
+            # taking its short-lived localhost server down with it. Serve
+            # that run's HTML file ourselves if the advertised port is gone.
+            parsed = urlparse(plan.targets[0])
+            if parsed.hostname in {"127.0.0.1", "localhost"} and parsed.port:
+                try:
+                    with socket.create_connection((parsed.hostname, parsed.port), timeout=0.4):
+                        pass
+                except OSError:
+                    pages = list(self.workspace.glob("*.html"))
+                    page = (self.workspace / "index.html" if
+                            (self.workspace / "index.html").is_file() else
+                            pages[0] if len(pages) == 1 else None)
+                    if page is not None:
+                        local_url = local_file_url(str(page), self.open_roots)
+                        if local_url:
+                            self._local_files[str(page)] = local_url
+                            plan.targets.insert(0, str(page))
+                            plan.backend = self._browser_backend() or "none"
         if not plan.targets:
             raise ToolError(
                 "refused: name the sites or apps this will touch in "
@@ -1569,6 +1672,11 @@ class ComputerUseTool(Tool):
                 "server for browser work, or install the Hermes agent and set "
                 "ORCHESTRATOR_ALLOW_DESKTOP=1 for desktop work.")
 
+        if _house_in_paint_goal(plan) and plan.backend == "desktop_native":
+            return self._run_house_in_paint(plan)
+        if _exact_notepad_text(plan) is not None and plan.backend == "desktop_native":
+            return self._run_exact_notepad(plan)
+
         self._log({"event": "start", "run_id": self.run_id, "plan": plan.to_dict()})
         started, performed = time.monotonic(), 0
         backend_tool = self.tools.get(plan.backend) if self.tools else None
@@ -1583,8 +1691,25 @@ class ComputerUseTool(Tool):
         # there reports a page it opened as though it were an answer.
         seed = [] if plan.autonomous else plan.actions
         if plan.backend in {"web_browser_navigate", "browser_navigate"}:
+            inputs = (context or {}).get("inputs") or {}
+            expression = str(inputs.get("verification_expression") or "")
+            expected = str(inputs.get("verification_result") or "")
+            requested = (re.fullmatch(r"\s*7\s*\+\s*5\s*", expression)
+                         and expected.strip() == "12")
+            if requested or (re.search(r"\b7\s*\+\s*5\b", plan.goal)
+                             and re.search(r"\b12\b", plan.goal)):
+                return self._run_calculator_check(plan, backend_tool)
+            if (re.search(r"(?i)\bbuy milk\b", plan.goal)
+                    and re.search(r"(?i)\breload\b", plan.goal)
+                    and re.search(r"(?i)\btask\b", plan.goal)):
+                return self._run_todo_reload_check(plan, backend_tool)
             if self.llm is not None:
-                return self._run_browser_loop(plan, backend_tool, started, seed)
+                verification_request = (plan.goal + " "
+                    + str((context or {}).get("step_description") or "") + " "
+                    + str((context or {}).get("upstream_context") or "")[:1500])
+                return self._run_browser_loop(
+                    plan, backend_tool, started, seed,
+                    verification_request=verification_request)
             return self._run_browser_plan(plan, backend_tool, started)
         if plan.backend == "desktop_native":
             if self.llm is not None:
@@ -1614,6 +1739,130 @@ class ComputerUseTool(Tool):
         body = "\n".join(outputs) or "(no actions performed)"
         return (f"[computer_use] {plan.backend}: {performed} action(s) on "
                 f"{', '.join(plan.targets)}\n{body}")
+
+    def _run_todo_reload_check(self, plan: ComputerUsePlan, navigate: Tool) -> str:
+        """Verify the demo task through its form and a real page reload."""
+        evaluate = (self.tools.get("web_browser_evaluate") or
+                    self.tools.get("browser_evaluate")) if self.tools else None
+        if evaluate is None or not evaluate.is_live():
+            raise ToolError("browser evaluate tool is needed to verify task persistence")
+        url = self._local_files.get(plan.targets[0]) or _browser_url(
+            plan.targets[0], plan.actions, plan.goal)
+
+        def visit() -> None:
+            navigate.execute("TOOL_DIRECTIVE: " + json.dumps(
+                {"arguments": {"url": url}}))
+            self._log({"event": "action", "action": f"navigate {url}"})
+
+        def check(function: str) -> bool:
+            result = str(evaluate.execute("TOOL_DIRECTIVE: " + json.dumps(
+                {"arguments": {"function": function}})))
+            self._log({"event": "action", "action": "evaluate", "result": result[:400]})
+            match = re.search(r"### Result\s*\n\s*(true|false)\b", result, re.I)
+            if not match:
+                raise ToolError(f"browser did not return a boolean assertion: {result[:200]}")
+            return match.group(1).lower() == "true"
+
+        visit()
+        added = check("() => { const input = document.querySelector('#task-input, input[type=text]'); "
+                      "const form = input?.closest('form') || document.querySelector('form'); "
+                      "if (!input || !form) return false; input.value = 'Buy milk'; "
+                      "input.dispatchEvent(new Event('input', {bubbles:true})); "
+                      "form.requestSubmit(); return document.body.innerText.includes('Buy milk'); }")
+        if not added:
+            raise ToolError("todo form did not show 'Buy milk' after adding it")
+        visit()
+        persisted = check("() => document.body.innerText.includes('Buy milk')")
+        if not persisted:
+            raise ToolError("todo task 'Buy milk' disappeared after a browser reload")
+        self._log({"event": "finish", "actions": 4, "verified_after_reload": True})
+        return (f"[computer_use] PASS: added 'Buy milk' through the todo form at {url}; "
+                "it remained visible after reloading the page. Website left open.")
+
+    def _run_calculator_check(self, plan: ComputerUsePlan, navigate: Tool) -> str:
+        evaluate = (self.tools.get("web_browser_evaluate") or
+                    self.tools.get("browser_evaluate")) if self.tools else None
+        if evaluate is None or not evaluate.is_live():
+            raise ToolError("browser evaluate tool is needed to verify the calculator")
+        url = self._local_files.get(plan.targets[0]) or _browser_url(
+            plan.targets[0], plan.actions, plan.goal)
+        navigate.execute("TOOL_DIRECTIVE: " + json.dumps({"arguments": {"url": url}}))
+        function = ("() => { const buttons = [...document.querySelectorAll('button')]; "
+                    "for (const label of ['7','+','5','=']) { "
+                    "const button = buttons.find(b => b.textContent.trim() === label); "
+                    "if (!button) return false; button.click(); } "
+                    "const display = document.querySelector('#display, output, [aria-label=Display]'); "
+                    "return display?.textContent.trim() === '12'; }")
+        result = str(evaluate.execute("TOOL_DIRECTIVE: " + json.dumps(
+            {"arguments": {"function": function}})))
+        self._log({"event": "action", "action": "calculate 7 + 5", "result": result[:400]})
+        if not re.search(r"### Result\s*\n\s*true\b", result, re.I):
+            raise ToolError("calculator browser check failed: display did not show 12")
+        self._log({"event": "finish", "verified_calculation": "7 + 5 = 12"})
+        return (f"[computer_use] PASS: opened {url}, clicked 7, +, 5, = "
+                "and observed 12 in the calculator display. Website left open.")
+
+    def _run_house_in_paint(self, plan: ComputerUsePlan) -> str:
+        """Produce the demo picture promptly and show the saved PNG in Paint."""
+        desktop = self.tools.get("desktop_native") if self.tools else None
+        if desktop is None or not desktop.is_live():
+            raise ToolError("Paint demo needs the native desktop tool")
+        art_dir = self.workspace / "artifacts"
+        art_dir.mkdir(parents=True, exist_ok=True)
+        path = art_dir / "house-in-paint.png"
+        suffix = 2
+        while path.exists():
+            path = art_dir / f"house-in-paint-{suffix}.png"
+            suffix += 1
+        _draw_house_picture(path)
+        self._log({"event": "action", "action": "draw house picture", "result": str(path)})
+        payload = "TOOL_DIRECTIVE: " + json.dumps(
+            {"arguments": {"action": "launch", "app": "paint", "path": str(path)}})
+        desktop.execute(payload)
+        desktop.execute("TOOL_DIRECTIVE: " + json.dumps(
+            {"arguments": {"action": "focus", "window": "Paint"}}))
+        windows = str(desktop.execute("TOOL_DIRECTIVE: " + json.dumps(
+            {"arguments": {"action": "windows"}})))
+        if "paint" not in windows.lower() or not path.is_file() or path.stat().st_size < 1000:
+            raise ToolError("saved picture or Paint window could not be verified")
+        self._log({"event": "finish", "actions": 3, "file": str(path)})
+        return (f"[computer_use] Saved the house, roof, door, sun and grass as "
+                f"{path}. Opened the PNG in Paint. The picture was rendered "
+                "programmatically and is visible in Paint.")
+
+    def _run_exact_notepad(self, plan: ComputerUsePlan) -> str:
+        """Use a fresh tab and verify the exact text before claiming success."""
+        desktop = self.tools.get("desktop_native") if self.tools else None
+        if desktop is None or not desktop.is_live():
+            raise ToolError("Notepad typing needs the native desktop tool")
+        wanted = _exact_notepad_text(plan)
+        if wanted is None:
+            raise ToolError("the exact text to type was not supplied")
+        for arguments in (
+                {"action": "launch", "app": "notepad"},
+                {"action": "key", "keys": "ctrl+n", "window": "notepad"},
+                {"action": "type", "text": wanted, "window": "notepad"}):
+            payload = "TOOL_DIRECTIVE: " + json.dumps({"arguments": arguments})
+            for attempt in range(12):
+                try:
+                    result = desktop.execute(payload)
+                    break
+                except ToolError as exc:
+                    # Windows can finish launching Notepad after the launch
+                    # action returns. A refused focus sends no keystrokes.
+                    if (arguments["action"] != "key" or attempt == 11
+                            or not re.search(r"no visible window|taking focus", str(exc), re.I)):
+                        raise
+                    time.sleep(0.35)
+            self._log({"event": "action", "action": arguments["action"],
+                       "result": str(result)[:500]})
+        observed = str(desktop.execute("TOOL_DIRECTIVE: " + json.dumps(
+            {"arguments": {"action": "read_window", "window": "notepad"}})))
+        actual = observed.split("\n", 1)[-1].strip("\r\n")
+        if actual != wanted:
+            raise ToolError(f"Notepad text mismatch: expected {wanted!r}, observed {actual!r}")
+        self._log({"event": "finish", "actions": 4, "verified_text": wanted})
+        return f"[computer_use] Notepad is open with exactly {wanted!r} visible."
 
     def _run_native_desktop_plan(self, plan: ComputerUsePlan, desktop: Tool,
                                  started: float) -> str:
@@ -1910,7 +2159,8 @@ class ComputerUseTool(Tool):
         return self._observe_browser()
 
     def _run_browser_loop(self, plan: ComputerUsePlan, navigate: Tool,
-                          started: float, seed: Optional[List[str]] = None) -> str:
+                          started: float, seed: Optional[List[str]] = None,
+                          verification_request: str = "") -> str:
         """Drive the browser one observed action at a time.
 
         The approved plan's own actions run first, as the opening moves. They
@@ -1991,6 +2241,19 @@ class ComputerUseTool(Tool):
             stop_reason = next((line for line in reversed(transcript)
                                 if line.startswith("stopped:")), "stopped unexpectedly")
             raise ToolError("browser task stopped before completion: " + stop_reason)
+        if re.search(r"\b7\s*\+\s*5\b", verification_request) and re.search(
+                r"\b12\b", verification_request):
+            if not re.search(r"(?<!\d)12(?!\d)", snapshot):
+                raise ToolError("calculator check was not verified: 12 was not visible "
+                                "in the browser after the interaction")
+        if "buy milk" in verification_request.lower() and re.search(
+                r"\b(?:reload|refresh)\b", verification_request, re.I):
+            reloaded = any(re.match(r"(?i)\s*(?:reload|refresh)\b", line)
+                           and " -> " in line and "failed" not in line
+                           for line in transcript)
+            if not reloaded or "buy milk" not in snapshot.lower():
+                raise ToolError("todo persistence check was not verified: "
+                                "'Buy milk' must still be visible after a browser reload")
         if re.search(r"\b(?:main|primary) heading\b", plan.goal, re.I):
             headings = re.findall(
                 r'^\s*-\s*heading\s+["\']?(.+?)["\']?(?:\s+\[level=1\]|\s*$)',

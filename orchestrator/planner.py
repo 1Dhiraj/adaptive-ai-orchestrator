@@ -157,6 +157,11 @@ TASKS:
   final task must use artifact_store with an artifacts/*.pdf path and depend
   on every step whose output belongs in the document. Opening/searching a
   browser is not completion until that PDF exists.
+- For a named Wikipedia article that needs summarizing into a file, retrieve
+  its article extract with rest_api using Wikipedia's w/api.php endpoint and
+  prop=extracts&explaintext=1, then summarize that text and save it. This is
+  faster and gives the summarizer readable source text. Use computer_use when
+  the person specifically asks to watch the article opened in a browser.
 - Descriptions state the deliverable, not the process.
 - Use condition only for a real branch. Its source must be a dependency's id
   or trigger.field for webhook data. Omit condition for normal tasks.
@@ -494,6 +499,18 @@ def _ensure_requested_artifacts(graph: DependencyGraph, description: str,
         if ".pdf" not in step.description.lower():
             step.description = f"{step.description.rstrip()} {instruction}"
             repairs.append(f"step '{step.id}': enforced requested PDF artifact at {path}")
+        # The artifact writer renders PDF bytes itself. A later browser
+        # "convert HTML to PDF" step cannot improve that file and may falsely
+        # report completion after only opening a print dialog.
+        if not re.search(r"(?i)\bopen\b.{0,30}\bbrowser\b", description):
+            for other in list(graph):
+                if (other.id != step.id and other.requires_tool == "computer_use"
+                        and step.id in other.depends_on
+                        and re.search(r"(?i)\b(?:convert|print|export)\b.{0,60}\bpdf\b",
+                                      other.description)):
+                    graph.remove(other.id)
+                    repairs.append(f"removed redundant browser PDF conversion '{other.id}'")
+            graph.validate()
         return
 
     depended_on = {dependency for step in graph for dependency in step.depends_on}
@@ -599,7 +616,8 @@ class TaskPlanner:
         # time with nothing to call.
         if tools is not None:
             catalogue = "\n".join(
-                f"- {t['name']}: {t['description']}" for t in tools.describe())
+                f"- {t['name']}: {t['description']}"
+                for t in tools.describe() if t["live"] and not t["broken"])
             if catalogue:
                 prompt += ("\n\nInstalled tools (use their exact names). If none can do the work, "
                            "declare a missing tool requirement and keep that capability on its step; "
@@ -652,7 +670,9 @@ class TaskPlanner:
         agents = self._parse_agents(parsed, repairs)
         declared_roles = {a.role for a in agents}
 
-        available = {t["name"] for t in tools.describe()} if tools is not None else None
+        available = ({t["name"] for t in tools.describe()
+                      if t["live"] and not t["broken"]}
+                     if tools is not None else None)
         graph, graph_repairs = self.build_graph(parsed["tasks"], declared_roles, available)
         repairs.extend(graph_repairs)
         _ensure_requested_artifacts(graph, project_description, repairs)
@@ -767,6 +787,9 @@ class TaskPlanner:
             return None, None
         if canonical in {"email", "gmail"} and available and "adaptive_email" in available:
             return "adaptive_email", "email uses reviewed API/browser delivery"
+        if canonical == "codex_agent" and available and "codex_agent" not in available \
+                and "workspace" in available:
+            return "workspace", "Codex agent unavailable; using the workspace writer"
         if available and "computer_use" in available and (
                 canonical in {"desktop_native", "hermes_desktop", "desktop_automation"}
                 or canonical.startswith("web_browser_")

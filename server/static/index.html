@@ -2246,7 +2246,10 @@ function renderRequirements(state) {
   let cls = "ok", text = "Ready to run — everything required is configured.";
   if (!req.can_run) {
     cls = "block";
-    text = `Blocked — ${req.blockers.length} requirement(s) missing: ${req.blockers.join(", ")}`;
+    const reasons = [...(req.blockers || []), ...(req.plan_errors || [])];
+    text = reasons.length
+      ? `Blocked — ${reasons.join(", ")}`
+      : "Cannot start yet. Review the task steps and tool status below.";
   } else if (req.degraded.length) {
     cls = "warn";
     text = `You can start. ${req.degraded.length} tool connection(s) use a backup or demo mode. Check the tool details before relying on the result.`;

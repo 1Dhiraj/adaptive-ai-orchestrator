@@ -109,6 +109,24 @@ class TestPlanning:
         assert "artifacts/report.pdf" in pdf.description
         assert any("real PDF artifact" in repair for repair in result.repairs)
 
+    def test_pdf_writer_replaces_redundant_browser_conversion(self):
+        from orchestrator.tools import default_tool_manager
+
+        plan = json.dumps({"tasks": [
+            {"id": "summarize", "role": "writer", "description": "Summarize the article"},
+            {"id": "save_html", "role": "writer", "tool": "artifact_store",
+             "description": "Save the summary as HTML", "depends_on": ["summarize"]},
+            {"id": "convert_pdf", "role": "desktop_operator", "tool": "computer_use",
+             "description": "Convert the saved HTML to PDF in the browser",
+             "depends_on": ["save_html"]},
+        ]})
+        result = TaskPlanner(llm=ScriptedProvider(plan)).plan(
+            "Read Wikipedia's directed acyclic graph article and save a PDF summary",
+            tools=default_tool_manager())
+
+        assert "convert_pdf" not in result.graph
+        assert ".pdf" in result.graph.get("save_html").description
+
     def test_valid_plan_becomes_a_graph(self):
         result = TaskPlanner(llm=ScriptedProvider(VALID_PLAN)).plan("Build something")
         assert result.graph.topological_order() == ["design", "build", "test"]

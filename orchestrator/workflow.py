@@ -1008,6 +1008,9 @@ class Workflow:
         # report before artifact_store writes it creates a corrupt artifact.
         context_budget = 8000 if step.requires_tool == "artifact_store" else None
         context = self.memory.build_context(step, self.graph, char_budget=context_budget)
+        if step.requires_tool in {"codex_agent", "computer_use"}:
+            context = (f"Original user request: {self.description[:1500]}\n\n"
+                       + context)
         if self.change_aware and self.graph.facts:
             from .change_aware import fact_context
             context += fact_context(self.graph.facts, step.output_type)

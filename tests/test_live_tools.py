@@ -226,8 +226,33 @@ class TestNotify:
 
 
 class TestRestApi:
+    def test_wikipedia_extract_fills_title_from_verified_inputs(self, monkeypatch):
+        from orchestrator.tools import builtin
+
+        captured = {}
+
+        class Response:
+            status_code = 200
+
+            def json(self):
+                return {"query": {"pages": [{"title": "Directed acyclic graph",
+                                             "extract": "A DAG has no directed cycles."}]}}
+
+        def fake_http(method, url, **kwargs):
+            captured["url"] = url
+            return Response()
+
+        monkeypatch.setattr(builtin, "_http", fake_http)
+        result = RestApiTool().execute(
+            'TOOL_DIRECTIVE: {"url":"https://en.wikipedia.org/w/api.php"}',
+            {"step_description": "Retrieve prop=extracts for article_title",
+             "inputs": {"article_title": "Directed acyclic graph"}})
+        assert "titles=Directed+acyclic+graph" in captured["url"]
+        assert "A DAG has no directed cycles" in result
+
     def test_no_directive_means_no_call(self, http_calls):
-        assert "no url" in RestApiTool().execute("just some prose")
+        with pytest.raises(ToolError, match="needs a url"):
+            RestApiTool().execute("just some prose")
         assert http_calls == []
 
     def test_directive_drives_the_request(self, http_calls):
@@ -238,6 +263,39 @@ class TestRestApi:
         assert call["method"] == "POST"
         assert call["url"] == "https://api.test/v1/ping"
         assert call["body"] == {"a": 1}
+
+    def test_wikipedia_request_identifies_client_and_returns_article_text(
+            self, monkeypatch):
+        from orchestrator.tools import builtin
+
+        captured = {}
+
+        def fake_http(method, url, *, headers=None, json_body=None, timeout=20.0):
+            captured.update(method=method, url=url, headers=headers)
+            return type("Response", (), {"status_code": 200,
+                                          "text": "Article text. " * 100})()
+
+        monkeypatch.setattr(builtin, "_http", fake_http)
+        result = RestApiTool().execute(
+            'TOOL_DIRECTIVE: {"url":"https://en.wikipedia.org/w/api.php?action=query"}')
+        assert captured["headers"]["User-Agent"].startswith("AdaptiveAIOrchestrator/")
+        assert len(result) > 300
+
+    def test_wikipedia_extract_is_readable_source_text(self, monkeypatch):
+        from orchestrator.tools import builtin
+
+        class Response:
+            status_code = 200
+
+            def json(self):
+                return {"query": {"pages": [{"title": "Directed acyclic graph",
+                                             "extract": "A DAG has no directed cycles."}]}}
+
+        monkeypatch.setattr(builtin, "_http", lambda *args, **kwargs: Response())
+        result = RestApiTool().execute(
+            'TOOL_DIRECTIVE: {"url":"https://en.wikipedia.org/w/api.php?action=query&prop=extracts"}')
+        assert "Title: Directed acyclic graph" in result
+        assert "A DAG has no directed cycles." in result
 
 
 class TestStripe:

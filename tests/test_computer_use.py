@@ -47,6 +47,60 @@ def directive(**arguments) -> str:
     return "do the thing\nTOOL_DIRECTIVE: " + json.dumps({"arguments": arguments})
 
 
+def test_localhost_goal_retains_server_port(monkeypatch):
+    from orchestrator.tools.computer_use import _parse_plan, _target_allowed
+
+    monkeypatch.setenv("ORCHESTRATOR_COMPUTER_USE_ALLOW", "127.0.0.1")
+    task = directive(goal="Open http://127.0.0.1:4173/ and check Buy milk after reload",
+                     targets=["127.0.0.1"], autonomous=True)
+    plan = _parse_plan(task)
+    assert plan.targets == ["http://127.0.0.1:4173/"]
+    assert _target_allowed(plan.targets[0], allowed_targets())
+
+
+def test_dead_localhost_server_uses_run_html(monkeypatch, tmp_path):
+    monkeypatch.setenv("ORCHESTRATOR_ALLOW_DESKTOP", "1")
+    monkeypatch.setenv("ORCHESTRATOR_COMPUTER_USE_ALLOW", "127.0.0.1")
+    browser = FakeBackend()
+    tool = ComputerUseTool(run_id="static-site", tools=ToolManager([browser]), root=tmp_path)
+    (tool.workspace / "index.html").write_text("<h1>Demo</h1>", encoding="utf-8")
+    tool.execute(directive(goal="Open http://127.0.0.1:1/ and read the site",
+                           targets=["127.0.0.1"], actions=["read the page"]))
+    url = json.loads(browser.calls[0].removeprefix("TOOL_DIRECTIVE: "))["arguments"]["url"]
+    assert url.startswith("http://127.0.0.1:")
+    assert url.endswith("/index.html")
+
+
+def test_todo_reload_requires_two_observed_assertions(monkeypatch, tmp_path):
+    monkeypatch.setenv("ORCHESTRATOR_ALLOW_DESKTOP", "1")
+    monkeypatch.setenv("ORCHESTRATOR_COMPUTER_USE_ALLOW", "127.0.0.1")
+    navigate = FakeBackend()
+    evaluate = FakeBackend(name="web_browser_evaluate", response="### Result\ntrue")
+    tool = ComputerUseTool(run_id="todo-check", tools=ToolManager([navigate, evaluate]),
+                           root=tmp_path)
+    (tool.workspace / "index.html").write_text("<form></form>", encoding="utf-8")
+    result = tool.execute(directive(
+        goal="Open http://127.0.0.1:1/ and add task Buy milk, then reload and verify",
+        targets=["127.0.0.1"], autonomous=True))
+    assert "PASS" in result
+    assert len(navigate.calls) == 2
+    assert len(evaluate.calls) == 2
+
+
+def test_calculator_requires_observed_twelve(monkeypatch, tmp_path):
+    monkeypatch.setenv("ORCHESTRATOR_ALLOW_DESKTOP", "1")
+    monkeypatch.setenv("ORCHESTRATOR_COMPUTER_USE_ALLOW", "127.0.0.1")
+    navigate = FakeBackend()
+    evaluate = FakeBackend(name="web_browser_evaluate", response="### Result\nfalse")
+    tool = ComputerUseTool(run_id="calculator-check",
+                           tools=ToolManager([navigate, evaluate]), root=tmp_path)
+    (tool.workspace / "calculator.html").write_text("<output id='display'>0</output>",
+                                                   encoding="utf-8")
+    with pytest.raises(ToolError, match="did not show 12"):
+        tool.execute(directive(goal="Open the calculator and check 7 + 5 = 12",
+                               targets=["calculator.html"], autonomous=True))
+
+
 @pytest.fixture
 def allow_everything(monkeypatch):
     monkeypatch.setenv("ORCHESTRATOR_ALLOW_DESKTOP", "1")
@@ -861,6 +915,23 @@ class TestOpeningItsOwnFiles:
         assert opened["arguments"]["url"].startswith("http://127.0.0.1:")
         assert opened["arguments"]["url"].endswith("/todo.html")
 
+    def test_explicit_file_url_uses_browser_even_when_desktop_is_available(
+            self, allow_everything, tmp_path):
+        browser = FakeBackend("web_browser_navigate")
+        desktop = FakeBackend("desktop_native")
+        tool = ComputerUseTool(run_id="explicit-file",
+                               tools=ToolManager([browser, desktop]), root=tmp_path)
+        tool.open_roots = self.roots(tmp_path)
+        page = tool.open_roots[0] / "calculator.html"
+        page.write_text("<h1>Calculator</h1>", encoding="utf-8")
+
+        tool.execute(directive(goal="open the calculator in a browser",
+                               targets=[page.as_uri()], actions=["read the page"]))
+
+        assert browser.calls
+        assert not desktop.calls
+
+
     def test_it_opens_what_this_run_just_built_when_the_plan_names_a_fact(
             self, allow_everything, tmp_path):
         # Plans refer to their own outputs by fact name -- "the path given by
@@ -900,6 +971,44 @@ class TestOpeningItsOwnFiles:
             tool.execute(directive(goal="open the saved app and confirm it",
                                    actions=["open the page"]))
         assert navigate.calls == []
+
+
+class TestReliableDesktopDemos:
+    def test_notepad_requires_exact_readback(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("ORCHESTRATOR_ALLOW_DESKTOP", "1")
+        monkeypatch.setenv("ORCHESTRATOR_COMPUTER_USE_ALLOW", "notepad")
+
+        class NotepadBackend(FakeBackend):
+            def _run(self, task, context=None):
+                self.calls.append(task)
+                spec = json.loads(task.removeprefix("TOOL_DIRECTIVE: "))["arguments"]
+                if spec["action"] == "read_window":
+                    return "[desktop_native] Notepad contains 5 character(s):\nwrong"
+                return "ok"
+
+        desktop = NotepadBackend("desktop_native")
+        tool = ComputerUseTool(run_id="notepad-check",
+                               tools=ToolManager([desktop]), root=tmp_path)
+        with pytest.raises(ToolError, match="Notepad text mismatch"):
+            tool.execute(directive(goal="Open a new Notepad document and type exactly 'Hello'. Leave it visible.",
+                                   targets=["notepad"], actions=[]))
+
+    def test_paint_saves_png_and_opens_it(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("ORCHESTRATOR_ALLOW_DESKTOP", "1")
+        monkeypatch.setenv("ORCHESTRATOR_COMPUTER_USE_ALLOW", "paint")
+        desktop = FakeBackend("desktop_native", response="Untitled - Paint")
+        tool = ComputerUseTool(run_id="paint-check",
+                               tools=ToolManager([desktop]), root=tmp_path)
+        result = tool.execute(directive(
+            goal="Open Paint, draw a house with roof, door, sun and grass, then save it",
+            targets=["paint"], actions=[]))
+        picture = tmp_path / "paint-check" / "artifacts" / "house-in-paint.png"
+        assert picture.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+        assert "Opened the PNG in Paint" in result
+        specs = [json.loads(call.removeprefix("TOOL_DIRECTIVE: "))["arguments"]
+                 for call in desktop.calls]
+        assert any(spec.get("action") == "launch" and spec.get("path") == str(picture)
+                   for spec in specs)
 
 
 class TestLaunchingAnEditorOnItsWork:

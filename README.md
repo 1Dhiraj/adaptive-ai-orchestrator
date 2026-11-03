@@ -723,7 +723,13 @@ For a ChatGPT-subscription demo, run `codex login` once, then
 `python scripts/use_engine.py codex` and restart the dashboard. This uses
 Codex CLI, not the OpenAI API or the Together gateway. It is subject to your
 ChatGPT plan's usage limits, and each model call starts a separate Codex turn.
-Switch back with `python scripts/use_engine.py together` and restart.
+If Codex reports a usage limit during the demo, the configured Gemini key can
+serve as a backup: run `python scripts/use_engine.py gemini`, then restart the
+dashboard. This explicitly changes the engine shown in the UI and disables
+`codex_agent` while Gemini is selected; software tasks then use the workspace
+tools. To return to the subscription engine, run
+`python scripts/use_engine.py codex` and restart. Gemini API usage may be
+billable depending on the key's tier.
 
 For software tasks, the dashboard also offers `codex_agent`. Set
 `CODEX_AGENT_BACKEND=app-server` to use Codex's persistent thread and agent

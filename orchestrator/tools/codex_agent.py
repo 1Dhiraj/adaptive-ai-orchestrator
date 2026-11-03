@@ -34,6 +34,8 @@ class CodexAgentTool(Tool):
         self.progress_callback = None
 
     def is_live(self) -> bool:
+        if os.environ.get("CODEX_AGENT_DISABLED", "").strip().lower() in {"1", "true", "yes"}:
+            return False
         try:
             CodexSubscriptionProvider()
             return True
@@ -41,6 +43,8 @@ class CodexAgentTool(Tool):
             return False
 
     def availability_detail(self) -> str:
+        if os.environ.get("CODEX_AGENT_DISABLED", "").strip().lower() in {"1", "true", "yes"}:
+            return "Codex agent disabled for the selected backup model"
         return ("signed-in Codex CLI available" if self.is_live()
                 else "Codex CLI unavailable; sign in with codex login")
 
@@ -87,11 +91,16 @@ class CodexAgentTool(Tool):
         if last_message.exists():
             last_message.unlink()
         timeout = min(max(int(os.environ.get("CODEX_AGENT_TIMEOUT_S", "600")), 30), 1800)
+        persistence = (
+            "If the request checks data after a reload, implement persistent storage "
+            "and test the reload before claiming success.\n"
+            if re.search(r"\b(?:reload|refresh|persist)\b", goal, re.I) else "")
         prompt = (
             "Complete this software task in the current workspace. You may inspect files, "
             "edit code, and run relevant build or test commands. Keep all new or edited files "
             "inside this workspace. Verify the result before saying it is done. "
-            "Report actual file paths and test results; never invent them.\n\n" + goal)
+            "Report actual file paths and test results; never invent them.\n"
+            + persistence + "\n" + goal)
         model = os.environ.get("CODEX_AGENT_MODEL", "").strip() or provider.model
         child_env = os.environ.copy()
         for key in list(child_env):

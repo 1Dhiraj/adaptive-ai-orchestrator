@@ -20,7 +20,7 @@ import shutil
 import sqlite3
 import subprocess
 import time
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -636,14 +636,44 @@ class RestApiTool(Tool):
         directive = _directive(task)
         url = directive.get("url")
         if not url:
-            return "[rest_api] no url in TOOL_DIRECTIVE; nothing called"
+            raise ToolError("rest_api needs a url in TOOL_DIRECTIVE; no request was made")
+        parsed = urlparse(url)
+        if (parsed.hostname or "").endswith("wikipedia.org") and parsed.path == "/w/api.php":
+            needs_extract = "prop=extracts" in str((context or {}).get("step_description") or "")
+            query = parse_qs(parsed.query)
+            if needs_extract and not query.get("titles"):
+                title = str(((context or {}).get("inputs") or {}).get("article_title") or "").strip()
+                if not title:
+                    raise ToolError("Wikipedia article title is missing; refusing to fetch API help")
+                query.update({"action": ["query"], "prop": ["extracts"],
+                              "explaintext": ["1"], "redirects": ["1"],
+                              "format": ["json"], "titles": [title]})
+                url = urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
+        headers = dict(directive.get("headers") or {})
+        if "wikipedia.org" == (urlparse(url).hostname or "").removeprefix("en."):
+            headers.setdefault(
+                "User-Agent",
+                "AdaptiveAIOrchestrator/1.0 (https://github.com/1Dhiraj/adaptive-ai-orchestrator)",
+            )
         response = _http(
             directive.get("method", "GET").upper(),
             url,
-            headers=directive.get("headers"),
+            headers=headers or None,
             json_body=directive.get("body"),
         )
-        return f"[rest_api] {response.status_code} {url} -> {response.text[:300]}"
+        if "wikipedia.org" in (urlparse(url).hostname or "") and "prop=extracts" in url:
+            try:
+                pages = response.json()["query"]["pages"]
+                page = pages[0] if isinstance(pages, list) else next(iter(pages.values()))
+                extract = str(page.get("extract") or "").strip()
+            except (KeyError, ValueError, TypeError, AttributeError, StopIteration) as exc:
+                raise ToolError("Wikipedia returned no readable article extract") from exc
+            if not extract:
+                raise ToolError("Wikipedia article extract is empty")
+            return (f"[rest_api] Source: {url}\nTitle: {page.get('title', '')}\n\n"
+                    + extract[:16000])
+        # A 300-character response hid useful content from downstream agents.
+        return f"[rest_api] {response.status_code} {url} -> {response.text[:16000]}"
 
 
 # ---------------------------------------------------------------------------
