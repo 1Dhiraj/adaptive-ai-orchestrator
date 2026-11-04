@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import socket
 import threading
 import time
@@ -72,6 +73,30 @@ def allowed_targets() -> List[str]:
     """
     raw = os.environ.get("ORCHESTRATOR_COMPUTER_USE_ALLOW", "")
     return [item.strip().lower() for item in re.split(r"[,\s]+", raw) if item.strip()]
+
+
+def _downloads_pdf_step(context: Optional[dict]) -> bool:
+    description = str((context or {}).get("step_description") or "")
+    return bool(re.search(r"(?i)\bDownloads\b", description)
+                and re.search(r"(?i)\bPDF\b", description)
+                and re.search(r"(?i)\b(?:copy|save|place)\b", description))
+
+
+def _downloads_directory() -> Path:
+    """Resolve the user's Windows Downloads known folder, including redirects."""
+    try:
+        import winreg
+
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+            raw, _ = winreg.QueryValueEx(
+                key, "{374DE290-123F-4565-9164-39C4925E467B}")
+        folder = Path(os.path.expandvars(raw)).resolve()
+    except (ImportError, OSError, ValueError):
+        folder = Path.home() / "Downloads"
+    if not folder.is_dir():
+        raise ToolError(f"Windows Downloads folder is unavailable: {folder}")
+    return folder
 
 
 def local_file_url(candidate: str, roots: List[Path]) -> Optional[str]:
@@ -1529,6 +1554,10 @@ class ComputerUseTool(Tool):
     def preview(self, task: str, context: Optional[dict] = None) -> str:
         plan = _parse_plan(task, context)
         plan.backend = self.backend(plan.targets)
+        if _downloads_pdf_step(context):
+            return ("computer_use [REAL]\nCopy this run's completed PDF into the "
+                    "Windows Downloads folder without overwriting an existing file; "
+                    "verify the copied PDF and report its full path.")
         if _exact_notepad_text(plan) is not None:
             return ("computer_use [REAL]\nOpen a fresh Notepad document, type the "
                     "requested text, read it back exactly, and leave it visible.")
@@ -1672,6 +1701,9 @@ class ComputerUseTool(Tool):
             return (f"[simulated:computer_use] would use {plan.backend} for "
                     f"{', '.join(plan.targets)}\n{plan.describe()}\n"
                     "  (set ORCHESTRATOR_ALLOW_DESKTOP=1 to act for real)")
+
+        if _downloads_pdf_step(context):
+            return self._run_downloads_pdf_copy()
 
         if plan.backend == "none":
             raise ToolError(
@@ -1839,6 +1871,35 @@ class ComputerUseTool(Tool):
         return ("[computer_use] Opened and read the Moon article.\n"
                 + "\n".join(f"{i}. {fact}" for i, (_, fact) in enumerate(facts, 1))
                 + f"\nSource: {article_url}")
+
+    def _run_downloads_pdf_copy(self) -> str:
+        """Copy one verified run artifact to the actual Downloads folder."""
+        from hashlib import sha256
+
+        candidates = sorted((self.workspace / "artifacts").glob("*.pdf"))
+        if len(candidates) != 1:
+            raise ToolError("expected exactly one completed PDF in this run's artifacts")
+        source = candidates[0]
+        data = source.read_bytes()
+        if not data.startswith(b"%PDF-") or b"%%EOF" not in data[-1024:]:
+            raise ToolError("the source artifact is not a valid PDF")
+        downloads = _downloads_directory()
+        destination = downloads / source.name
+        suffix = 2
+        while destination.exists():
+            destination = downloads / f"{source.stem}-{suffix}.pdf"
+            suffix += 1
+        try:
+            shutil.copy2(source, destination)
+            copied = destination.read_bytes()
+        except OSError as exc:
+            raise ToolError(f"could not copy PDF to Downloads: {exc}") from exc
+        if sha256(copied).digest() != sha256(data).digest():
+            destination.unlink(missing_ok=True)
+            raise ToolError("PDF copy did not match the source artifact")
+        self._log({"event": "finish", "source": str(source),
+                   "downloads_pdf": str(destination), "verified": True})
+        return f"[computer_use] Saved and verified the PDF in Downloads: {destination}"
 
     def _run_house_in_paint(self, plan: ComputerUsePlan) -> str:
         """Produce the demo picture promptly and show the saved PNG in Paint."""

@@ -142,6 +142,26 @@ def test_browser_blocked_answer_is_failure(monkeypatch, tmp_path):
                                targets=["summary.pdf"], autonomous=True))
 
 
+def test_downloads_copy_uses_run_pdf_and_avoids_overwrite(monkeypatch, tmp_path):
+    import orchestrator.tools.computer_use as computer_use
+
+    monkeypatch.setenv("ORCHESTRATOR_ALLOW_DESKTOP", "1")
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    monkeypatch.setattr(computer_use, "_downloads_directory", lambda: downloads)
+    tool = ComputerUseTool(run_id="download-copy", root=tmp_path)
+    artifact = tool.workspace / "artifacts" / "summary.pdf"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"%PDF-1.4\ncontent\n%%EOF")
+    (downloads / "summary.pdf").write_bytes(b"older file")
+    result = tool.execute(directive(goal="Save PDF in Downloads",
+                                    targets=["summary.pdf"]),
+                          {"step_description": "Copy the PDF into Downloads and verify it."})
+    assert (downloads / "summary.pdf").read_bytes() == b"older file"
+    assert (downloads / "summary-2.pdf").read_bytes() == artifact.read_bytes()
+    assert str(downloads / "summary-2.pdf") in result
+
+
 @pytest.fixture
 def allow_everything(monkeypatch):
     monkeypatch.setenv("ORCHESTRATOR_ALLOW_DESKTOP", "1")
