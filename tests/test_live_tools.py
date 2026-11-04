@@ -12,6 +12,7 @@ import json
 import subprocess
 import sys
 import types
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -249,6 +250,57 @@ class TestRestApi:
              "inputs": {"article_title": "Directed acyclic graph"}})
         assert "titles=Directed+acyclic+graph" in captured["url"]
         assert "A DAG has no directed cycles" in result
+
+    def test_wikipedia_extract_uses_literal_title_when_plan_renames_fact(self, monkeypatch):
+        from orchestrator.tools import builtin
+
+        captured = {}
+
+        class Response:
+            status_code = 200
+
+            def json(self):
+                return {"query": {"pages": [{"title": "Directed acyclic graph",
+                                             "extract": "A DAG has no directed cycles."}]}}
+
+        def fake_http(method, url, **kwargs):
+            captured["url"] = url
+            return Response()
+
+        monkeypatch.setattr(builtin, "_http", fake_http)
+        result = RestApiTool().execute(
+            'TOOL_DIRECTIVE: {"url":"https://en.wikipedia.org/w/api.php"}',
+            {"step_description": "GET with action=query, prop=extracts, and titles=Directed acyclic graph.",
+             "inputs": {}})
+        assert parse_qs(urlparse(captured["url"]).query)["titles"] == ["Directed acyclic graph"]
+        assert "A DAG has no directed cycles" in result
+
+    def test_wikipedia_extract_searches_original_request_when_title_is_unresolved(self, monkeypatch):
+        from orchestrator.tools import builtin
+
+        captured = {}
+
+        class Response:
+            status_code = 200
+
+            def json(self):
+                return {"query": {"pages": [{"title": "Directed acyclic graph",
+                                             "extract": "A DAG has no directed cycles."}]}}
+
+        def fake_http(method, url, **kwargs):
+            captured["url"] = url
+            return Response()
+
+        monkeypatch.setattr(builtin, "_http", fake_http)
+        result = RestApiTool().execute(
+            'TOOL_DIRECTIVE: {"url":"https://en.wikipedia.org/w/api.php"}',
+            {"step_description": "GET with prop=extracts and titles set to article_title.",
+             "upstream_context": "Original user request: Read Wikipedia's article on directed acyclic graphs, write a short summary, and save it as a PDF.",
+             "inputs": {}})
+        params = parse_qs(urlparse(captured["url"]).query)
+        assert params["gsrsearch"] == ["directed acyclic graphs"]
+        assert params["exintro"] == ["1"]
+        assert "Source: https://en.wikipedia.org/wiki/Directed_acyclic_graph" in result
 
     def test_no_directive_means_no_call(self, http_calls):
         with pytest.raises(ToolError, match="needs a url"):

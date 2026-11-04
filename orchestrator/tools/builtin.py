@@ -20,7 +20,7 @@ import shutil
 import sqlite3
 import subprocess
 import time
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -241,6 +241,13 @@ class ArtifactStoreTool(Tool):
         if content is None:
             content = re.sub(r"TOOL_DIRECTIVE:.*$", "", task,
                              flags=re.MULTILINE | re.DOTALL).strip()
+        if path.suffix.lower() == ".pdf":
+            content = "\n".join(
+                line for line in str(content).splitlines()
+                if not (line.lstrip().upper().startswith("BLOCKER:")
+                        and re.search(r"\bPDF\b.*\b(?:not|has not)\b.*\bgenerat",
+                                      line, re.I))
+            )
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
             if path.suffix.lower() == ".pdf":
@@ -639,15 +646,34 @@ class RestApiTool(Tool):
             raise ToolError("rest_api needs a url in TOOL_DIRECTIVE; no request was made")
         parsed = urlparse(url)
         if (parsed.hostname or "").endswith("wikipedia.org") and parsed.path == "/w/api.php":
-            needs_extract = "prop=extracts" in str((context or {}).get("step_description") or "")
+            step_description = str((context or {}).get("step_description") or "")
+            needs_extract = "prop=extracts" in step_description
             query = parse_qs(parsed.query)
-            if needs_extract and not query.get("titles"):
-                title = str(((context or {}).get("inputs") or {}).get("article_title") or "").strip()
+            if needs_extract and not (query.get("titles") or query.get("generator")):
+                inputs = (context or {}).get("inputs") or {}
+                title = next((str(inputs[key]).strip()
+                              for key in ("article_title", "article_topic", "title", "topic")
+                              if inputs.get(key)), "")
                 if not title:
-                    raise ToolError("Wikipedia article title is missing; refusing to fetch API help")
+                    stated = re.search(r"(?i)\btitles\s*=\s*([^.;\n]+)", step_description)
+                    if stated:
+                        title = stated.group(1).strip()
                 query.update({"action": ["query"], "prop": ["extracts"],
-                              "explaintext": ["1"], "redirects": ["1"],
-                              "format": ["json"], "titles": [title]})
+                              "explaintext": ["1"], "exintro": ["1"],
+                              "redirects": ["1"], "format": ["json"],
+                              "formatversion": ["2"]})
+                if title:
+                    query["titles"] = [title]
+                else:
+                    request = str((context or {}).get("upstream_context") or "")
+                    topic = re.search(
+                        r"(?i)\bWikipedia(?:['\u2019]s)?\s+article\s+(?:on|about)\s+([^,.;\n]+)",
+                        request,
+                    )
+                    if not topic:
+                        raise ToolError("Wikipedia article topic is missing; refusing to fetch API help")
+                    query.update({"generator": ["search"],
+                                  "gsrsearch": [topic.group(1).strip()], "gsrlimit": ["1"]})
                 url = urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
         headers = dict(directive.get("headers") or {})
         if "wikipedia.org" == (urlparse(url).hostname or "").removeprefix("en."):
@@ -670,8 +696,16 @@ class RestApiTool(Tool):
                 raise ToolError("Wikipedia returned no readable article extract") from exc
             if not extract:
                 raise ToolError("Wikipedia article extract is empty")
-            return (f"[rest_api] Source: {url}\nTitle: {page.get('title', '')}\n\n"
-                    + extract[:16000])
+            introduction = extract.split("\n== ", 1)[0].strip()
+            complete_intro = len(introduction) <= 16000
+            readable = introduction[:16000]
+            title = str(page.get("title") or "").strip()
+            article_url = (f"https://{urlparse(url).hostname}/wiki/"
+                           f"{quote(title.replace(' ', '_'))}") if title else url
+            section = ("Complete article introduction" if complete_intro
+                       else "Article introduction excerpt")
+            return (f"[rest_api] Source: {article_url}\nTitle: {title}\n"
+                    f"{section}:\n\n{readable}")
         # A 300-character response hid useful content from downstream agents.
         return f"[rest_api] {response.status_code} {url} -> {response.text[:16000]}"
 

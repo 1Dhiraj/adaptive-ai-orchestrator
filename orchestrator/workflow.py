@@ -1008,7 +1008,7 @@ class Workflow:
         # report before artifact_store writes it creates a corrupt artifact.
         context_budget = 8000 if step.requires_tool == "artifact_store" else None
         context = self.memory.build_context(step, self.graph, char_budget=context_budget)
-        if step.requires_tool in {"codex_agent", "computer_use"}:
+        if step.requires_tool in {"codex_agent", "computer_use", "rest_api"}:
             context = (f"Original user request: {self.description[:1500]}\n\n"
                        + context)
         if self.change_aware and self.graph.facts:
@@ -1166,7 +1166,10 @@ class Workflow:
             import inspect
 
             call_parameters = inspect.signature(agent.call_tool).parameters
-            extra = ({"upstream_context": self.memory.build_context(step, self.graph)}
+            upstream = self.memory.build_context(step, self.graph)
+            if action.tool == "rest_api":
+                upstream = f"Original user request: {self.description[:1500]}\n\n" + upstream
+            extra = ({"upstream_context": upstream}
                      if "upstream_context" in call_parameters else {})
             invocation = agent.call_tool(
                 step, action.tool, action.payload, self.tools,

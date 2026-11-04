@@ -152,6 +152,24 @@ class TestTerminalFallbacks:
         assert "Verified text" in text
         assert "the complete deliverable" not in text.lower()
 
+    def test_pdf_summary_drops_stale_generation_note_and_renders_links(self, tmp_path):
+        import json
+        import pdfplumber
+
+        content = ("A **directed acyclic graph** has no directed cycles.\n"
+                   "Source: [Wikipedia](https://en.wikipedia.org/wiki/Directed_acyclic_graph).\n"
+                   "BLOCKER: The PDF has not been generated.")
+        payload = "TOOL_DIRECTIVE: " + json.dumps(
+            {"arguments": {"path": "artifacts/summary.pdf", "content": content}})
+        ArtifactStoreTool("pdf-clean", root=tmp_path).execute(payload)
+        report = tmp_path / "pdf-clean" / "artifacts" / "summary.pdf"
+        with pdfplumber.open(report) as document:
+            text = "\n".join(page.extract_text() or "" for page in document.pages)
+        assert "directed acyclic graph" in text
+        assert "**" not in text
+        assert "https://en.wikipedia.org/wiki/Directed_acyclic_graph" in text
+        assert "BLOCKER" not in text
+
     def test_artifact_store_rejects_parent_traversal(self, tmp_path):
         payload = ('TOOL_DIRECTIVE: {"arguments": '
                    '{"path":"artifacts/../escape.txt","content":"no"}}')

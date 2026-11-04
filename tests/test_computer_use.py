@@ -127,6 +127,21 @@ def test_moon_facts_require_article_and_source_extract(monkeypatch, tmp_path):
     assert "5. Apollo 11" in result
 
 
+def test_browser_blocked_answer_is_failure(monkeypatch, tmp_path):
+    monkeypatch.setenv("ORCHESTRATOR_ALLOW_DESKTOP", "1")
+    monkeypatch.setenv("ORCHESTRATOR_COMPUTER_USE_ALLOW", "127.0.0.1")
+    navigate = FakeBackend()
+    tool = ComputerUseTool(run_id="blocked-copy", tools=ToolManager([navigate]),
+                           root=tmp_path, llm=object())
+    (tool.workspace / "summary.pdf").write_bytes(b"%PDF-1.4\n%%EOF")
+    monkeypatch.setattr(tool, "_observe_browser", lambda: "### Page\n- Page URL: local")
+    monkeypatch.setattr(tool, "_decide", lambda *args: {
+        "done": True, "answer": "Saving is blocked. The PDF was not saved in Downloads."})
+    with pytest.raises(ToolError, match="uncompleted action"):
+        tool.execute(directive(goal="Save the PDF in Downloads",
+                               targets=["summary.pdf"], autonomous=True))
+
+
 @pytest.fixture
 def allow_everything(monkeypatch):
     monkeypatch.setenv("ORCHESTRATOR_ALLOW_DESKTOP", "1")

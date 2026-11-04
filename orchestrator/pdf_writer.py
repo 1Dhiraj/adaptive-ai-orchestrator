@@ -42,7 +42,9 @@ def write_pdf(path: Path | str, content: str, title: Optional[str] = None) -> st
     story = [Paragraph(escape(clean_title or "Report"), styles["ArtifactTitle"])]
     lines = str(content or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
     for raw in lines:
-        line = raw.strip()
+        line = raw.strip().replace("\ufffd", " - ")
+        line = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r"\1 (\2)", line)
+        line = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
         if not line:
             story.append(Spacer(1, 3 * mm))
             continue

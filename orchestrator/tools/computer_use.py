@@ -2279,6 +2279,10 @@ class ComputerUseTool(Tool):
             stop_reason = next((line for line in reversed(transcript)
                                 if line.startswith("stopped:")), "stopped unexpectedly")
             raise ToolError("browser task stopped before completion: " + stop_reason)
+        if re.search(
+                r"(?i)\bsaving is blocked\b|\bPDF was not saved\b|"
+                r'"verification_passed"\s*:\s*false', answer):
+            raise ToolError("browser task reported an uncompleted action: " + answer[:300])
         if re.search(r"\b7\s*\+\s*5\b", verification_request) and re.search(
                 r"\b12\b", verification_request):
             if not re.search(r"(?<!\d)12(?!\d)", snapshot):
